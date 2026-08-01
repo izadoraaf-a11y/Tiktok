@@ -14,6 +14,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+import pytesseract
 from PIL import Image, ImageDraw, ImageFont
 from flask import Flask, request, jsonify, send_file, Response
 from werkzeug.utils import secure_filename
@@ -219,6 +220,17 @@ PAGINA_EDITOR_HTML = """
   .card { width: 100%; max-width: 420px; }
   h1 { font-size: 22px; margin-bottom: 4px; }
   p.sub { color: #a0a0a0; font-size: 14px; margin-top: 0; margin-bottom: 20px; }
+  button.secundario {
+    width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #333;
+    background: #1a1a1a; color: #ccc; font-weight: 600; font-size: 13px; cursor: pointer;
+  }
+  .job-recente {
+    background: #1a1a1a; border: 1px solid #262626; border-radius: 10px;
+    padding: 12px; margin-bottom: 8px; font-size: 13px;
+  }
+  .job-recente a {
+    display: inline-block; margin-top: 6px; color: #25f4ee; font-weight: 700; text-decoration: none;
+  }
   .nav { display: flex; gap: 8px; margin-bottom: 20px; }
   .nav a {
     flex: 1; text-align: center; padding: 10px; border-radius: 8px;
@@ -266,6 +278,11 @@ PAGINA_EDITOR_HTML = """
     </div>
     <h1>Auto-editor</h1>
     <p class="sub">Filtro de brilho + CTA em massa no final dos seus vídeos</p>
+
+    <button type="button" class="secundario" style="margin-bottom:18px;" onclick="verRecentes()">
+      🕓 Ver processamentos recentes (última hora)
+    </button>
+    <div id="lista-recentes" style="display:none; margin-bottom:20px;"></div>
 
     <div class="campo">
       <label>Seus vídeos (pode escolher vários)</label>
@@ -489,6 +506,37 @@ async function checarStatus() {
   poller = setInterval(checarStatus, 3000);
   checarStatus();
 })();
+
+async function verRecentes() {
+  const div = document.getElementById('lista-recentes');
+  div.style.display = 'block';
+  div.innerHTML = '<p class="ajuda">Buscando...</p>';
+
+  const resp = await fetch('/api/editor/recentes');
+  const data = await resp.json();
+
+  if (!data.jobs || data.jobs.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhum processamento na última hora.</p>';
+    return;
+  }
+
+  div.innerHTML = '';
+  data.jobs.forEach(j => {
+    const item = document.createElement('div');
+    item.className = 'job-recente';
+    let statusTexto = '';
+    if (j.status === 'concluido') statusTexto = `✅ Pronto — ${j.total} vídeo(s)`;
+    else if (j.status === 'erro') statusTexto = '❌ Erro';
+    else statusTexto = `⏳ Processando (${j.concluidos}/${j.total})`;
+
+    item.innerHTML = `
+      <div>${statusTexto} — há ${j.minutos_atras} min</div>
+      <div style="color:#666; font-size:11px;">ID: ${j.job_id}</div>
+      ${j.status === 'concluido' ? `<a href="/api/editor/baixar/${j.job_id}">⬇ Baixar ZIP</a>` : ''}
+    `;
+    div.appendChild(item);
+  });
+}
 </script>
 </body>
 </html>
@@ -598,7 +646,32 @@ PAGINA_GERADOR_HTML = """
       <button class="secundario" style="margin-top:8px;" onclick="adicionarExemplo()">+ Adicionar exemplo</button>
     </div>
 
+    <p class="ajuda" style="margin: 12px 0 6px;">Ou envia prints e a IA transcreve pra você:</p>
+    <div class="campo">
+      <input id="imagens-copy" type="file" accept="image/*" multiple
+             style="width:100%; padding:12px; border-radius:10px; border:1px dashed #333; background:#1a1a1a; color:#ccc; font-size:13px;" />
+    </div>
+    <button class="secundario" onclick="transcreverCopies()" id="btn-transcrever-copies">📝 Transcrever prints e adicionar</button>
+    <p id="status-transcricao" class="ajuda" style="margin-top:8px; margin-bottom:16px;"></p>
+
     <div id="lista-exemplos"></div>
+
+    <h2>📸 Estilo visual personalizado</h2>
+    <p class="ajuda" style="margin-top:-6px; margin-bottom:12px;">
+      Sobe várias fotos de referência do estilo que você quer (mesa, mão, luz,
+      composição). A IA analisa o padrão visual — sem copiar texto ou marca
+      das imagens — e guarda um estilo reutilizável.
+    </p>
+
+    <div class="campo">
+      <input id="imagens-referencia" type="file" accept="image/*" multiple
+             style="width:100%; padding:12px; border-radius:10px; border:1px dashed #333; background:#1a1a1a; color:#ccc; font-size:13px;" />
+      <p class="ajuda">Até 10 imagens analisadas por vez (se enviar mais, usa as 10 primeiras).</p>
+    </div>
+
+    <button class="secundario" onclick="analisarEstilo()" id="btn-analisar-estilo">🔍 Analisar estilo com IA</button>
+    <p id="status-estilo" class="ajuda" style="margin-top:8px;"></p>
+    <div id="estilo-personalizado-status" class="ajuda" style="margin-top:6px; margin-bottom:20px;"></div>
 
     <h2>🎨 Geração</h2>
 
@@ -607,6 +680,7 @@ PAGINA_GERADOR_HTML = """
       <select id="estilo">
         <option value="foto_livro">Foto realista — mão segurando livro/celular</option>
         <option value="ilustrado_cosmico">Ilustrado — cósmico/místico</option>
+        <option value="personalizado">Meu estilo (dos exemplos que enviei)</option>
       </select>
     </div>
 
@@ -649,6 +723,7 @@ function carregarConfig() {
   document.getElementById('funil').value = localStorage.getItem('gerador_funil') || '';
   exemplos = JSON.parse(localStorage.getItem('gerador_exemplos') || '[]');
   renderizarExemplos();
+  atualizarStatusEstiloPersonalizado();
 }
 
 function atualizarStatusChave() {
@@ -659,6 +734,53 @@ function atualizarStatusChave() {
   } else {
     div.innerHTML = '⚠️ Nenhuma chave configurada — <a href="/config" style="color:#ff2d55; font-weight:700;">configurar agora</a>';
   }
+}
+
+async function analisarEstilo() {
+  const apiKey = localStorage.getItem('api_key_openai') || '';
+  const imagens = document.getElementById('imagens-referencia').files;
+
+  if (!apiKey) { alert('Configura sua chave OpenAI na aba Config primeiro'); return; }
+  if (imagens.length === 0) { alert('Escolhe pelo menos 1 imagem de referência'); return; }
+
+  document.getElementById('btn-analisar-estilo').disabled = true;
+  document.getElementById('status-estilo').textContent = 'Analisando estilo (pode levar 20-30s)...';
+
+  const formData = new FormData();
+  for (const img of imagens) formData.append('imagens', img);
+  formData.append('api_key', apiKey);
+
+  try {
+    const resp = await fetch('/api/gerador/analisar-estilo', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.erro) {
+      document.getElementById('status-estilo').textContent = 'Erro: ' + data.erro;
+    } else {
+      localStorage.setItem('estilo_personalizado_texto', data.descricao_estilo);
+      document.getElementById('status-estilo').textContent =
+        `✅ Estilo aprendido de ${data.imagens_analisadas} imagem(ns)! Selecione "Meu estilo" na lista abaixo.`;
+      atualizarStatusEstiloPersonalizado();
+    }
+  } catch (e) {
+    document.getElementById('status-estilo').textContent = 'Erro de conexão. Tenta de novo.';
+  }
+  document.getElementById('btn-analisar-estilo').disabled = false;
+}
+
+function atualizarStatusEstiloPersonalizado() {
+  const texto = localStorage.getItem('estilo_personalizado_texto') || '';
+  const div = document.getElementById('estilo-personalizado-status');
+  if (texto) {
+    div.innerHTML = '📌 Estilo salvo: <span style="color:#888;">' + texto.slice(0, 140) + '...</span> ' +
+      '<a href="#" onclick="limparEstiloPersonalizado(); return false;" style="color:#ff2d55;">(limpar)</a>';
+  } else {
+    div.textContent = 'Nenhum estilo personalizado analisado ainda.';
+  }
+}
+
+function limparEstiloPersonalizado() {
+  localStorage.removeItem('estilo_personalizado_texto');
+  atualizarStatusEstiloPersonalizado();
 }
 
 function salvarConfig() {
@@ -672,6 +794,36 @@ function adicionarExemplo() {
   localStorage.setItem('gerador_exemplos', JSON.stringify(exemplos));
   document.getElementById('novo-exemplo').value = '';
   renderizarExemplos();
+}
+
+async function transcreverCopies() {
+  const imagens = document.getElementById('imagens-copy').files;
+
+  if (imagens.length === 0) { alert('Escolhe pelo menos 1 print'); return; }
+
+  document.getElementById('btn-transcrever-copies').disabled = true;
+  document.getElementById('status-transcricao').textContent = 'Lendo os prints (OCR local, sem custo)...';
+
+  const formData = new FormData();
+  for (const img of imagens) formData.append('imagens', img);
+
+  try {
+    const resp = await fetch('/api/gerador/transcrever-copies', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.erro) {
+      document.getElementById('status-transcricao').textContent = 'Erro: ' + data.erro;
+    } else {
+      exemplos.push(...data.textos);
+      localStorage.setItem('gerador_exemplos', JSON.stringify(exemplos));
+      renderizarExemplos();
+      document.getElementById('status-transcricao').textContent =
+        `✅ ${data.textos.length} exemplo(s) transcrito(s) e adicionado(s) abaixo. Confere se saiu certinho — OCR pode errar em fontes estilizadas.`;
+      document.getElementById('imagens-copy').value = '';
+    }
+  } catch (e) {
+    document.getElementById('status-transcricao').textContent = 'Erro de conexão. Tenta de novo.';
+  }
+  document.getElementById('btn-transcrever-copies').disabled = false;
 }
 
 function removerExemplo(i) {
@@ -703,11 +855,16 @@ async function gerar() {
   const apiKey = localStorage.getItem('api_key_openai') || '';
   const funil = document.getElementById('funil').value.trim();
   const estilo = document.getElementById('estilo').value;
+  const estiloCustomizado = localStorage.getItem('estilo_personalizado_texto') || '';
   const quantidade = document.getElementById('quantidade').value || 8;
   const gerarReels = document.getElementById('gerar-reels').checked;
 
   if (!apiKey) { alert('Configura sua chave da API OpenAI na aba Config primeiro'); return; }
   if (!funil) { alert('Descreve o funil/nicho atual'); return; }
+  if (estilo === 'personalizado' && !estiloCustomizado) {
+    alert('Analisa um estilo personalizado primeiro (na seção acima) ou escolhe outro estilo');
+    return;
+  }
 
   salvarConfig();
 
@@ -722,7 +879,10 @@ async function gerar() {
     resp = await fetch('/api/gerador/iniciar', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: apiKey, funil, exemplos, estilo, quantidade, gerar_reels: gerarReels })
+      body: JSON.stringify({
+        api_key: apiKey, funil, exemplos, estilo, estilo_customizado: estiloCustomizado,
+        quantidade, gerar_reels: gerarReels,
+      })
     });
   } catch (e) {
     document.getElementById('status-text').textContent = 'Erro de conexão. Tenta de novo.';
@@ -1294,6 +1454,82 @@ PROMPTS_ESTILO = {
     ),
 }
 
+MAX_IMAGENS_ANALISE_ESTILO = 10  # cap de imagens analisadas por chamada (custo/tamanho da requisição)
+
+
+def analisar_estilo_visual(api_key: str, imagens_bytes: list) -> str:
+    """Manda as imagens de referência do usuário pro GPT-4o (visão) e pede
+    uma descrição REUTILIZÁVEL do padrão visual/fotográfico — explicitamente
+    sem reproduzir texto, marca ou logotipo específico das imagens originais,
+    só o estilo (composição, luz, materiais, enquadramento)."""
+    conteudo = [{
+        "type": "text",
+        "text": (
+            "Estas são referências visuais de um usuário para um projeto de conteúdo "
+            "próprio. Descreva em inglês, em um parágrafo denso e reutilizável como "
+            "prompt de geração de imagem, SOMENTE o padrão visual/fotográfico "
+            "recorrente entre elas: composição, ângulo, iluminação, materiais de "
+            "fundo (mesa, tecido, varanda etc.), paleta de cores, textura, e o "
+            "estilo de eventual ilustração de linha (se houver).\n\n"
+            "IMPORTANTE: não mencione, descreva ou tente reproduzir nenhum texto "
+            "específico escrito nas imagens, nem nomes de marca, logotipos ou selos "
+            "visíveis — ignore completamente esses elementos. A descrição final deve "
+            "terminar deixando claro que a cena gerada não deve ter nenhum texto, "
+            "letra ou logotipo, só o cenário/composição vazio pronto pra receber "
+            "texto por cima depois."
+        ),
+    }]
+    for img in imagens_bytes[:MAX_IMAGENS_ANALISE_ESTILO]:
+        b64 = base64.b64encode(img).decode()
+        conteudo.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+        })
+
+    resp = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": conteudo}],
+            "max_tokens": 500,
+        },
+        timeout=90,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+MAX_IMAGENS_TRANSCRICAO_COPY = 10
+
+
+def transcrever_copies_de_imagens(imagens_bytes: list) -> list:
+    """Lê o texto de cada print via OCR local (Tesseract) — de graça, sem
+    chamar nenhuma API paga. Faz uma limpeza básica no texto extraído,
+    já que OCR de print de rede social pode pegar ruído (curtidas, ícones)."""
+    textos = []
+    for img_bytes in imagens_bytes[:MAX_IMAGENS_TRANSCRICAO_COPY]:
+        try:
+            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            texto_bruto = pytesseract.image_to_string(img, lang="eng+por")
+        except Exception:
+            continue
+
+        # Limpeza básica: remove linhas muito curtas/isoladas (comuns em
+        # ruído de interface: números de likes, hora, ícones mal lidos)
+        linhas = [l.strip() for l in texto_bruto.split("\n")]
+        linhas_uteis = [l for l in linhas if len(l) > 3]
+        texto_limpo = " ".join(linhas_uteis).strip()
+
+        if texto_limpo:
+            textos.append(texto_limpo)
+
+    return textos
+
+
 
 def chamar_openai_copies(api_key: str, funil: str, exemplos: list, quantidade: int) -> list:
     """Pede pra OpenAI gerar N copies (título/apoio/cta) originais, inspiradas
@@ -1341,10 +1577,13 @@ def chamar_openai_copies(api_key: str, funil: str, exemplos: list, quantidade: i
     return dados.get("copies", [])
 
 
-def chamar_openai_imagem_grade(api_key: str, estilo: str) -> Image.Image:
+def chamar_openai_imagem_grade(api_key: str, estilo: str, estilo_customizado: str = "") -> Image.Image:
     """Pede pra OpenAI gerar 1 imagem retrato dividida em grade 2x2 (4 cenas
     diferentes, sem texto), pra depois cortar em 4 imagens 9:16 separadas."""
-    base_prompt = PROMPTS_ESTILO.get(estilo, PROMPTS_ESTILO["foto_livro"])
+    if estilo == "personalizado" and estilo_customizado:
+        base_prompt = estilo_customizado
+    else:
+        base_prompt = PROMPTS_ESTILO.get(estilo, PROMPTS_ESTILO["foto_livro"])
     prompt = (
         f"A single image split into an even 2x2 grid by a thin visible white "
         f"dividing line (2 columns, 2 rows). Each of the 4 quadrants shows a "
@@ -1494,7 +1733,8 @@ def criar_reel_de_imagem(caminho_imagem: str, caminho_audio: str, caminho_saida:
 
 
 def gerador_job_worker(job_id: str, api_key: str, funil: str, exemplos: list,
-                        estilo: str, quantidade: int, gerar_reels: bool):
+                        estilo: str, quantidade: int, gerar_reels: bool,
+                        estilo_customizado: str = ""):
     job = GERADOR_JOBS[job_id]
     pasta_job = GERADOR_BASE_TMP / job_id
     pasta_job.mkdir(exist_ok=True)
@@ -1514,7 +1754,7 @@ def gerador_job_worker(job_id: str, api_key: str, funil: str, exemplos: list,
         imagens_finais = []
         for i in range(0, len(copies), 4):
             lote = copies[i:i + 4]
-            grade = chamar_openai_imagem_grade(api_key, estilo)
+            grade = chamar_openai_imagem_grade(api_key, estilo, estilo_customizado)
             quadrantes = cortar_grade_em_quatro(grade)
 
             for quad, copy in zip(quadrantes, lote):
@@ -1769,6 +2009,27 @@ def editor_baixar(job_id):
     return send_file(job["zip_path"], as_attachment=True, download_name=f"editados_{job_id}.zip")
 
 
+@app.route("/api/editor/recentes")
+def editor_recentes():
+    """Lista os processamentos das últimas horas — serve pra recuperar um
+    job cuja tela foi perdida (ex: saiu do app no meio do processamento)."""
+    agora = time.time()
+    recentes = []
+    for jid, job in EDITOR_JOBS.items():
+        idade = agora - job.get("criado_em", agora)
+        if idade > 3600:
+            continue
+        recentes.append({
+            "job_id": jid,
+            "status": job["status"],
+            "concluidos": job.get("concluidos", 0),
+            "total": job.get("total", 0),
+            "minutos_atras": round(idade / 60, 1),
+        })
+    recentes.sort(key=lambda x: x["minutos_atras"])
+    return jsonify({"jobs": recentes})
+
+
 @app.route("/gerador")
 def gerador_page():
     return PAGINA_GERADOR_HTML
@@ -1786,14 +2047,19 @@ def gerador_iniciar():
     funil = data.get("funil", "").strip()
     exemplos = data.get("exemplos", [])
     estilo = data.get("estilo", "foto_livro")
+    estilo_customizado = data.get("estilo_customizado", "").strip()
     gerar_reels = bool(data.get("gerar_reels", False))
 
     if not api_key:
         return jsonify({"erro": "Informe sua chave da API OpenAI"}), 400
     if not funil:
         return jsonify({"erro": "Descreva o funil/nicho atual"}), 400
-    if estilo not in PROMPTS_ESTILO:
+
+    estilos_validos = set(PROMPTS_ESTILO.keys()) | {"personalizado"}
+    if estilo not in estilos_validos:
         estilo = "foto_livro"
+    if estilo == "personalizado" and not estilo_customizado:
+        return jsonify({"erro": "Analisa um estilo personalizado primeiro (ou escolhe outro estilo)"}), 400
 
     try:
         quantidade = int(data.get("quantidade", 8))
@@ -1812,12 +2078,54 @@ def gerador_iniciar():
 
     t = threading.Thread(
         target=gerador_job_worker,
-        args=(job_id, api_key, funil, exemplos, estilo, quantidade, gerar_reels),
+        args=(job_id, api_key, funil, exemplos, estilo, quantidade, gerar_reels, estilo_customizado),
         daemon=True,
     )
     t.start()
 
     return jsonify({"job_id": job_id})
+
+
+@app.route("/api/gerador/analisar-estilo", methods=["POST"])
+def gerador_analisar_estilo():
+    api_key = request.form.get("api_key", "").strip()
+    imagens_files = request.files.getlist("imagens")
+
+    if not api_key:
+        return jsonify({"erro": "Configura sua chave OpenAI na aba Config primeiro"}), 400
+    if not imagens_files:
+        return jsonify({"erro": "Envie pelo menos 1 imagem de referência"}), 400
+
+    try:
+        imagens_bytes = [f.read() for f in imagens_files[:MAX_IMAGENS_ANALISE_ESTILO]]
+        descricao = analisar_estilo_visual(api_key, imagens_bytes)
+        return jsonify({"descricao_estilo": descricao, "imagens_analisadas": len(imagens_bytes)})
+    except requests.exceptions.HTTPError as e:
+        detalhe = ""
+        try:
+            detalhe = e.response.json().get("error", {}).get("message", "")
+        except Exception:
+            pass
+        return jsonify({"erro": f"Erro na API da OpenAI: {detalhe or str(e)}"}), 400
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+
+@app.route("/api/gerador/transcrever-copies", methods=["POST"])
+def gerador_transcrever_copies():
+    imagens_files = request.files.getlist("imagens")
+
+    if not imagens_files:
+        return jsonify({"erro": "Envie pelo menos 1 print"}), 400
+
+    try:
+        imagens_bytes = [f.read() for f in imagens_files[:MAX_IMAGENS_TRANSCRICAO_COPY]]
+        textos = transcrever_copies_de_imagens(imagens_bytes)
+        if not textos:
+            return jsonify({"erro": "Não consegui ler texto legível nos prints enviados"}), 400
+        return jsonify({"textos": textos})
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
 
 
 @app.route("/api/gerador/status/<job_id>")
