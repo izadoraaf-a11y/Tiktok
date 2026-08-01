@@ -9,8 +9,11 @@ import time
 import base64
 import json
 import subprocess
+import io
 from pathlib import Path
 
+import requests
+from PIL import Image, ImageDraw, ImageFont
 from flask import Flask, request, jsonify, send_file, Response
 from werkzeug.utils import secure_filename
 
@@ -86,7 +89,9 @@ PAGINA_HTML = """
   <div class="card">
     <div class="nav">
       <a href="/" class="ativo">Baixador</a>
-      <a href="/editor">Auto-editor</a>
+      <a href="/editor">Editor</a>
+      <a href="/gerador">Gerador</a>
+      <a href="/config">Config</a>
     </div>
     <h1>Baixador de Vídeos</h1>
     <p class="sub">TikTok, Instagram e Facebook — cole o link e baixe sem marca d'água</p>
@@ -254,7 +259,9 @@ PAGINA_EDITOR_HTML = """
   <div class="card">
     <div class="nav">
       <a href="/">Baixador</a>
-      <a href="/editor" class="ativo">Auto-editor</a>
+      <a href="/editor" class="ativo">Editor</a>
+      <a href="/gerador">Gerador</a>
+      <a href="/config">Config</a>
     </div>
     <h1>Auto-editor</h1>
     <p class="sub">Filtro de brilho + CTA em massa no final dos seus vídeos</p>
@@ -262,7 +269,7 @@ PAGINA_EDITOR_HTML = """
     <div class="campo">
       <label>Seus vídeos (pode escolher vários)</label>
       <input id="videos" type="file" accept="video/*" multiple />
-      <p class="ajuda">Máximo de 5 vídeos por vez no plano gratuito.</p>
+      <p class="ajuda">Máximo de 15 vídeos por vez. Vídeos grandes (4K) são reduzidos automaticamente pra processar mais rápido.</p>
     </div>
 
     <div class="campo">
@@ -288,10 +295,26 @@ PAGINA_EDITOR_HTML = """
     </div>
 
     <div id="campos-legenda" style="display:none;">
-      <div class="campo">
+      <div class="campo" style="display:flex; gap:16px;">
+        <label style="display:flex; align-items:center; gap:6px; margin-bottom:0; font-weight:400;">
+          <input type="radio" name="modo-legenda" value="automatica" checked onchange="alternarModoLegenda()" style="width:auto;" /> Automática (transcreve o áudio)
+        </label>
+      </div>
+      <div class="campo" style="display:flex; gap:16px; margin-top:-10px;">
+        <label style="display:flex; align-items:center; gap:6px; margin-bottom:0; font-weight:400;">
+          <input type="radio" name="modo-legenda" value="manual" onchange="alternarModoLegenda()" style="width:auto;" /> Digitar o texto
+        </label>
+      </div>
+
+      <div id="status-chave-editor" class="campo" style="background:#1a1a1a; border:1px solid #262626; border-radius:10px; padding:10px 12px; font-size:12px;">
+        Verificando chave da API...
+      </div>
+
+      <div id="campo-texto-manual" class="campo" style="display:none;">
         <label>Texto da legenda</label>
         <input id="texto-legenda" type="text" placeholder="Ex: Não perca essa dica!" style="padding:12px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#fff; font-size:15px;" />
       </div>
+
       <div class="campo">
         <label>Modelo da legenda</label>
         <select id="modelo-legenda" onchange="alternarCorFundo()" style="width:100%; padding:12px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#fff; font-size:15px;">
@@ -344,6 +367,23 @@ function atualizarBrilho() {
 function alternarLegenda() {
   const marcado = document.getElementById('usar-legenda').checked;
   document.getElementById('campos-legenda').style.display = marcado ? 'block' : 'none';
+  if (marcado) { atualizarStatusChaveEditor(); alternarModoLegenda(); }
+}
+
+function alternarModoLegenda() {
+  const modo = document.querySelector('input[name="modo-legenda"]:checked').value;
+  document.getElementById('campo-texto-manual').style.display = modo === 'manual' ? 'block' : 'none';
+  document.getElementById('status-chave-editor').style.display = modo === 'automatica' ? 'block' : 'none';
+}
+
+function atualizarStatusChaveEditor() {
+  const chave = localStorage.getItem('api_key_openai') || '';
+  const div = document.getElementById('status-chave-editor');
+  if (chave) {
+    div.innerHTML = '✅ Chave OpenAI configurada — a legenda vai ser transcrita automaticamente';
+  } else {
+    div.innerHTML = '⚠️ Precisa configurar a chave OpenAI — <a href="/config" style="color:#ff2d55; font-weight:700;">configurar agora</a>';
+  }
 }
 
 function alternarCorFundo() {
@@ -357,14 +397,17 @@ async function processar() {
   const brilho = document.getElementById('brilho').value;
   const duracao = document.getElementById('duracao').value || 5;
   const usarLegenda = document.getElementById('usar-legenda').checked;
+  const modoLegenda = usarLegenda ? document.querySelector('input[name="modo-legenda"]:checked').value : 'manual';
   const textoLegenda = document.getElementById('texto-legenda').value.trim();
   const modeloLegenda = document.getElementById('modelo-legenda').value;
   const corFundoCitacao = document.getElementById('cor-fundo-citacao').value;
+  const apiKey = localStorage.getItem('api_key_openai') || '';
 
   if (videos.length === 0) { alert('Escolhe pelo menos 1 vídeo'); return; }
   if (!cta) { alert('Escolhe a imagem do CTA'); return; }
-  if (videos.length > 5) { alert('Máximo de 5 vídeos por vez'); return; }
-  if (usarLegenda && !textoLegenda) { alert('Digite o texto da legenda ou desmarque a opção'); return; }
+  if (videos.length > 15) { alert('Máximo de 15 vídeos por vez'); return; }
+  if (usarLegenda && modoLegenda === 'manual' && !textoLegenda) { alert('Digite o texto da legenda ou escolhe "Automática"'); return; }
+  if (usarLegenda && modoLegenda === 'automatica' && !apiKey) { alert('Configura sua chave OpenAI na aba Config primeiro'); return; }
 
   const formData = new FormData();
   for (const v of videos) formData.append('videos', v);
@@ -372,9 +415,11 @@ async function processar() {
   formData.append('brilho', brilho);
   formData.append('duracao', duracao);
   formData.append('usar_legenda', usarLegenda ? '1' : '0');
+  formData.append('modo_legenda', modoLegenda);
   formData.append('texto_legenda', textoLegenda);
   formData.append('modelo_legenda', modeloLegenda);
   formData.append('cor_fundo_citacao', corFundoCitacao);
+  formData.append('api_key', apiKey);
 
   document.getElementById('btn-processar').disabled = true;
   document.getElementById('status-box').style.display = 'block';
@@ -407,7 +452,8 @@ async function checarStatus() {
   const data = await resp.json();
 
   if (data.status === 'processando') {
-    document.getElementById('status-text').textContent = `Processando... (${data.concluidos}/${data.total} prontos)`;
+    const extra = data.arquivo_atual && data.arquivo_atual.startsWith('transcrevendo') ? ' — transcrevendo áudio...' : '';
+    document.getElementById('status-text').textContent = `Processando... (${data.concluidos}/${data.total} prontos)${extra}`;
     const pct = Math.min(90, 10 + (data.concluidos / Math.max(data.total,1)) * 80);
     document.getElementById('bar-fill').style.width = pct + '%';
   } else if (data.status === 'na_fila') {
@@ -426,6 +472,425 @@ async function checarStatus() {
     document.getElementById('btn-processar').disabled = false;
   }
 }
+</script>
+</body>
+</html>
+"""
+
+PAGINA_GERADOR_HTML = """
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gerador IA</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#0f0f0f">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Roboto, Arial, sans-serif;
+    background: #0f0f0f;
+    color: #f5f5f5;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px 60px;
+    min-height: 100vh;
+  }
+  .card { width: 100%; max-width: 420px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  h2 { font-size: 15px; margin: 28px 0 10px; color: #ddd; }
+  p.sub { color: #a0a0a0; font-size: 14px; margin-top: 0; margin-bottom: 20px; }
+  .nav { display: flex; gap: 8px; margin-bottom: 20px; }
+  .nav a {
+    flex: 1; text-align: center; padding: 10px; border-radius: 8px;
+    text-decoration: none; font-size: 13px; font-weight: 600; color: #888;
+    background: #1a1a1a; border: 1px solid #262626;
+  }
+  .nav a.ativo { color: #000; background: linear-gradient(135deg, #ff2d55, #25f4ee); border: none; }
+  label { font-size: 13px; color: #ccc; display: block; margin-bottom: 6px; font-weight: 600; }
+  .campo { margin-bottom: 16px; }
+  .ajuda { font-size: 11px; color: #666; margin-top: 4px; line-height: 1.4; }
+  input[type="text"], input[type="password"], input[type="number"], textarea, select {
+    width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #333;
+    background: #1a1a1a; color: #fff; font-size: 15px; font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 70px; }
+  button {
+    width: 100%; padding: 14px; border-radius: 10px; border: none;
+    background: linear-gradient(135deg, #ff2d55, #25f4ee);
+    color: #000; font-weight: 700; font-size: 16px; cursor: pointer;
+  }
+  button.secundario {
+    background: #1a1a1a; color: #ccc; border: 1px solid #333; font-weight: 600; font-size: 14px; padding: 10px;
+  }
+  button:disabled { opacity: 0.4; }
+  .exemplo-item {
+    display: flex; gap: 8px; align-items: flex-start; background: #1a1a1a;
+    border: 1px solid #262626; border-radius: 8px; padding: 10px; margin-bottom: 8px;
+  }
+  .exemplo-texto { flex: 1; font-size: 13px; color: #ccc; white-space: pre-wrap; }
+  .exemplo-del { color: #ff2d55; background: none; border: none; font-size: 13px; width: auto; padding: 4px 8px; }
+  #status-box { margin-top: 20px; padding: 16px; border-radius: 10px; background: #1a1a1a; display: none; }
+  #status-text { font-size: 14px; margin-bottom: 8px; }
+  .bar-bg { background: #333; border-radius: 6px; height: 8px; overflow: hidden; }
+  .bar-fill { background: linear-gradient(135deg, #ff2d55, #25f4ee); height: 100%; width: 0%; transition: width 0.3s; }
+  #download-link {
+    display: none; margin-top: 16px; text-align: center; padding: 14px;
+    border-radius: 10px; background: #16a34a; color: #fff; text-decoration: none; font-weight: 700;
+  }
+  .aviso { font-size: 12px; color: #777; margin-top: 24px; line-height: 1.5; }
+  .linha { display: flex; gap: 10px; }
+  .linha > div { flex: 1; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="nav">
+      <a href="/">Baixador</a>
+      <a href="/editor">Editor</a>
+      <a href="/gerador" class="ativo">Gerador</a>
+      <a href="/config">Config</a>
+    </div>
+    <h1>Gerador IA</h1>
+    <p class="sub">Copies + imagens geradas por IA, no seu funil, alimentado pelos seus exemplos</p>
+
+    <h2>⚙️ Configuração</h2>
+
+    <div id="status-chave" class="campo" style="background:#1a1a1a; border:1px solid #262626; border-radius:10px; padding:12px 14px; font-size:13px;">
+      Verificando chave da API...
+    </div>
+
+    <div class="campo">
+      <label>Funil / nicho atual</label>
+      <input id="funil" type="text" placeholder="Ex: Chama gêmea, reconciliação amorosa" onchange="salvarConfig()" />
+    </div>
+
+    <h2>📌 Exemplos que estão convertendo</h2>
+    <p class="ajuda" style="margin-top:-6px; margin-bottom:12px;">
+      Cole aqui o texto de copies que estão funcionando bem (as suas ou de referência).
+      A IA vai se inspirar nesses exemplos — sem copiar — pra criar frases novas no mesmo estilo.
+    </p>
+
+    <div class="campo">
+      <textarea id="novo-exemplo" placeholder="Ex: A pessoa que você está pensando também está pensando em você..."></textarea>
+      <button class="secundario" style="margin-top:8px;" onclick="adicionarExemplo()">+ Adicionar exemplo</button>
+    </div>
+
+    <div id="lista-exemplos"></div>
+
+    <h2>🎨 Geração</h2>
+
+    <div class="campo">
+      <label>Estilo visual</label>
+      <select id="estilo">
+        <option value="foto_livro">Foto realista — mão segurando livro/celular</option>
+        <option value="ilustrado_cosmico">Ilustrado — cósmico/místico</option>
+      </select>
+    </div>
+
+    <div class="linha campo">
+      <div>
+        <label>Quantas imagens</label>
+        <input id="quantidade" type="number" value="8" min="4" max="40" step="4" />
+      </div>
+    </div>
+    <p class="ajuda" style="margin-top:-10px;">Sempre em múltiplos de 4 (arredonda pra cima).</p>
+
+    <div class="campo" style="display:flex; align-items:center; gap:8px;">
+      <input id="gerar-reels" type="checkbox" style="width:auto;" />
+      <label style="margin-bottom:0;" for="gerar-reels">Também criar Reels (vídeo 6s + som ambiente)</label>
+    </div>
+
+    <button id="btn-gerar" onclick="gerar()">Gerar</button>
+
+    <div id="status-box">
+      <div id="status-text">Preparando...</div>
+      <div class="bar-bg"><div id="bar-fill" class="bar-fill"></div></div>
+    </div>
+
+    <a id="download-link" href="#">Baixar ZIP com o resultado</a>
+
+    <p class="aviso">
+      Isso consome créditos da sua conta OpenAI (texto + imagem). Cada grupo de 4 imagens
+      = 1 chamada de imagem. Processamento pode levar alguns minutos no plano gratuito.
+      Conteúdo gerado é original — inspirado no estilo dos seus exemplos, não uma cópia deles.
+    </p>
+  </div>
+
+<script>
+let jobId = null;
+let poller = null;
+let exemplos = [];
+
+function carregarConfig() {
+  atualizarStatusChave();
+  document.getElementById('funil').value = localStorage.getItem('gerador_funil') || '';
+  exemplos = JSON.parse(localStorage.getItem('gerador_exemplos') || '[]');
+  renderizarExemplos();
+}
+
+function atualizarStatusChave() {
+  const chave = localStorage.getItem('api_key_openai') || '';
+  const div = document.getElementById('status-chave');
+  if (chave) {
+    div.innerHTML = '✅ Chave OpenAI configurada — <a href="/config" style="color:#25f4ee;">trocar</a>';
+  } else {
+    div.innerHTML = '⚠️ Nenhuma chave configurada — <a href="/config" style="color:#ff2d55; font-weight:700;">configurar agora</a>';
+  }
+}
+
+function salvarConfig() {
+  localStorage.setItem('gerador_funil', document.getElementById('funil').value);
+}
+
+function adicionarExemplo() {
+  const texto = document.getElementById('novo-exemplo').value.trim();
+  if (!texto) return;
+  exemplos.push(texto);
+  localStorage.setItem('gerador_exemplos', JSON.stringify(exemplos));
+  document.getElementById('novo-exemplo').value = '';
+  renderizarExemplos();
+}
+
+function removerExemplo(i) {
+  exemplos.splice(i, 1);
+  localStorage.setItem('gerador_exemplos', JSON.stringify(exemplos));
+  renderizarExemplos();
+}
+
+function renderizarExemplos() {
+  const div = document.getElementById('lista-exemplos');
+  div.innerHTML = '';
+  exemplos.forEach((ex, i) => {
+    const item = document.createElement('div');
+    item.className = 'exemplo-item';
+    const p = document.createElement('div');
+    p.className = 'exemplo-texto';
+    p.textContent = ex;
+    const btn = document.createElement('button');
+    btn.className = 'exemplo-del';
+    btn.textContent = '✕';
+    btn.onclick = () => removerExemplo(i);
+    item.appendChild(p);
+    item.appendChild(btn);
+    div.appendChild(item);
+  });
+}
+
+async function gerar() {
+  const apiKey = localStorage.getItem('api_key_openai') || '';
+  const funil = document.getElementById('funil').value.trim();
+  const estilo = document.getElementById('estilo').value;
+  const quantidade = document.getElementById('quantidade').value || 8;
+  const gerarReels = document.getElementById('gerar-reels').checked;
+
+  if (!apiKey) { alert('Configura sua chave da API OpenAI na aba Config primeiro'); return; }
+  if (!funil) { alert('Descreve o funil/nicho atual'); return; }
+
+  salvarConfig();
+
+  document.getElementById('btn-gerar').disabled = true;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('download-link').style.display = 'none';
+  document.getElementById('status-text').textContent = 'Gerando as frases...';
+  document.getElementById('bar-fill').style.width = '5%';
+
+  let resp;
+  try {
+    resp = await fetch('/api/gerador/iniciar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey, funil, exemplos, estilo, quantidade, gerar_reels: gerarReels })
+    });
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Erro de conexão. Tenta de novo.';
+    document.getElementById('btn-gerar').disabled = false;
+    return;
+  }
+  const data = await resp.json();
+
+  if (data.erro) {
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-gerar').disabled = false;
+    return;
+  }
+
+  jobId = data.job_id;
+  poller = setInterval(checarStatus, 3000);
+}
+
+async function checarStatus() {
+  const resp = await fetch('/api/gerador/status/' + jobId);
+  const data = await resp.json();
+
+  if (data.status === 'gerando_copies') {
+    document.getElementById('status-text').textContent = 'Criando as frases com IA...';
+    document.getElementById('bar-fill').style.width = '15%';
+  } else if (data.status === 'gerando_imagens') {
+    document.getElementById('status-text').textContent = `Gerando imagens... (${data.concluidos}/${data.total})`;
+    const pct = Math.min(85, 20 + (data.concluidos / Math.max(data.total,1)) * 50);
+    document.getElementById('bar-fill').style.width = pct + '%';
+  } else if (data.status === 'gerando_reels') {
+    document.getElementById('status-text').textContent = `Animando reels... (${data.concluidos_reels || 0}/${data.total})`;
+    document.getElementById('bar-fill').style.width = '90%';
+  } else if (data.status === 'concluido') {
+    clearInterval(poller);
+    document.getElementById('status-text').textContent = `Pronto! ${data.total} imagem(ns) geradas.`;
+    document.getElementById('bar-fill').style.width = '100%';
+    const link = document.getElementById('download-link');
+    link.href = '/api/gerador/baixar/' + jobId;
+    link.style.display = 'block';
+    document.getElementById('btn-gerar').disabled = false;
+  } else if (data.status === 'erro') {
+    clearInterval(poller);
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-gerar').disabled = false;
+  }
+}
+
+carregarConfig();
+</script>
+</body>
+</html>
+"""
+
+PAGINA_CONFIG_HTML = """
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Configurações</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#0f0f0f">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Roboto, Arial, sans-serif;
+    background: #0f0f0f;
+    color: #f5f5f5;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px 60px;
+    min-height: 100vh;
+  }
+  .card { width: 100%; max-width: 420px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #a0a0a0; font-size: 14px; margin-top: 0; margin-bottom: 24px; }
+  .nav { display: flex; gap: 8px; margin-bottom: 20px; }
+  .nav a {
+    flex: 1; text-align: center; padding: 10px; border-radius: 8px;
+    text-decoration: none; font-size: 13px; font-weight: 600; color: #888;
+    background: #1a1a1a; border: 1px solid #262626;
+  }
+  .nav a.ativo { color: #000; background: linear-gradient(135deg, #ff2d55, #25f4ee); border: none; }
+  .servico {
+    background: #1a1a1a; border: 1px solid #262626; border-radius: 12px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .servico-titulo { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-weight: 700; font-size: 15px; }
+  .servico-desc { font-size: 12px; color: #888; margin-bottom: 12px; line-height: 1.4; }
+  label { font-size: 13px; color: #ccc; display: block; margin-bottom: 6px; font-weight: 600; }
+  input[type="password"], input[type="text"] {
+    width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #333;
+    background: #0f0f0f; color: #fff; font-size: 15px; font-family: inherit;
+  }
+  .status-badge {
+    display: inline-block; font-size: 11px; font-weight: 700; padding: 3px 10px;
+    border-radius: 20px; margin-left: 6px;
+  }
+  .badge-ok { background: #16a34a33; color: #4ade80; }
+  .badge-vazio { background: #ff2d5533; color: #ff6b8a; }
+  .ajuda { font-size: 11px; color: #666; margin-top: 6px; line-height: 1.4; }
+  .ajuda a { color: #25f4ee; }
+  button.salvar {
+    width: 100%; padding: 12px; border-radius: 10px; border: none; margin-top: 10px;
+    background: linear-gradient(135deg, #ff2d55, #25f4ee); color: #000; font-weight: 700; font-size: 14px; cursor: pointer;
+  }
+  .toast {
+    display: none; position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #16a34a; color: white; padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: 600;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="nav">
+      <a href="/">Baixador</a>
+      <a href="/editor">Editor</a>
+      <a href="/gerador">Gerador</a>
+      <a href="/config" class="ativo">Config</a>
+    </div>
+    <h1>Configurações</h1>
+    <p class="sub">Suas chaves de API, usadas por todas as ferramentas do app</p>
+
+    <div class="servico">
+      <div class="servico-titulo">
+        🤖 OpenAI <span id="badge-openai" class="status-badge badge-vazio">não configurada</span>
+      </div>
+      <div class="servico-desc">
+        Usada no Gerador IA (copies + imagens) e no Auto-editor (legenda automática por transcrição).
+      </div>
+      <label>Chave da API</label>
+      <input id="chave-openai" type="password" placeholder="sk-..." />
+      <p class="ajuda">Pega a sua em <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a></p>
+      <button class="salvar" onclick="salvar('openai')">Salvar</button>
+    </div>
+
+    <div class="servico">
+      <div class="servico-titulo">
+        🎵 ElevenLabs <span id="badge-elevenlabs" class="status-badge badge-vazio">não configurada</span>
+      </div>
+      <div class="servico-desc">
+        Reservada pra quando ativarmos música de meditação gerada por IA de verdade (hoje o app usa som ambiente sintetizado, sem precisar dessa chave).
+      </div>
+      <label>Chave da API</label>
+      <input id="chave-elevenlabs" type="password" placeholder="Sua chave da ElevenLabs" />
+      <p class="ajuda">Pega a sua em <a href="https://elevenlabs.io" target="_blank">elevenlabs.io</a></p>
+      <button class="salvar" onclick="salvar('elevenlabs')">Salvar</button>
+    </div>
+
+    <p class="ajuda" style="margin-top:20px;">
+      As chaves ficam salvas só no seu navegador (localStorage), nunca no servidor.
+      Se trocar de celular ou limpar os dados do navegador, precisa cadastrar de novo.
+    </p>
+  </div>
+
+  <div id="toast" class="toast">Chave salva ✓</div>
+
+<script>
+function carregarStatus() {
+  ['openai', 'elevenlabs'].forEach(servico => {
+    const chave = localStorage.getItem('api_key_' + servico) || '';
+    document.getElementById('chave-' + servico).value = chave;
+    const badge = document.getElementById('badge-' + servico);
+    if (chave) {
+      badge.textContent = 'configurada';
+      badge.className = 'status-badge badge-ok';
+    } else {
+      badge.textContent = 'não configurada';
+      badge.className = 'status-badge badge-vazio';
+    }
+  });
+}
+
+function salvar(servico) {
+  const valor = document.getElementById('chave-' + servico).value.trim();
+  localStorage.setItem('api_key_' + servico, valor);
+  carregarStatus();
+  const toast = document.getElementById('toast');
+  toast.style.display = 'block';
+  setTimeout(() => { toast.style.display = 'none'; }, 2000);
+}
+
+carregarStatus();
 </script>
 </body>
 </html>
@@ -476,7 +941,7 @@ def eh_video_unico(url: str) -> bool:
 EDITOR_BASE_TMP = Path(tempfile.gettempdir()) / "editor_jobs"
 EDITOR_BASE_TMP.mkdir(exist_ok=True)
 EDITOR_JOBS = {}
-MAX_VIDEOS_EDITOR = 5
+MAX_VIDEOS_EDITOR = 15
 MAX_TAMANHO_VIDEO_MB = 150
 FONTE_PADRAO = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONTE_SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
@@ -506,6 +971,9 @@ CORES_FAIXA_CITACAO = {
 }
 
 
+LIMITE_DIMENSAO_VIDEO = 1920  # baixa a resolução se passar disso, pra processar mais rápido
+
+
 def probe_video(path: str):
     """Retorna (largura, altura, fps, tem_audio) de um vídeo via ffprobe."""
     cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -522,63 +990,169 @@ def probe_video(path: str):
     out_audio = subprocess.run(cmd_audio, capture_output=True, text=True, timeout=30)
     tem_audio = bool(out_audio.stdout.strip())
 
+    # Reduz vídeos muito grandes (ex: 4K de celular) — acelera bastante o
+    # processamento, já que menos pixels = menos trabalho em todo o pipeline.
+    maior_lado = max(w, h)
+    if maior_lado > LIMITE_DIMENSAO_VIDEO:
+        fator = LIMITE_DIMENSAO_VIDEO / maior_lado
+        w = int(w * fator) // 2 * 2   # precisa ser par pro codec h264
+        h = int(h * fator) // 2 * 2
+
     return w, h, fps, tem_audio
+
+
+def extrair_audio_para_transcricao(input_path: str, saida_path: str):
+    """Extrai só o áudio (comprimido, mono) pra mandar pra API — bem menor
+    que o vídeo inteiro, o que acelera o upload e evita o limite de 25MB."""
+    cmd = ["ffmpeg", "-y", "-i", input_path, "-vn", "-ac", "1", "-ar", "16000",
+           "-b:a", "64k", saida_path]
+    subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+
+
+def transcrever_segmentos(api_key: str, input_path: str, pasta_trabalho: Path,
+                           max_duracao_segmento: float = 4.0) -> list:
+    """Transcreve o áudio do vídeo via Whisper (OpenAI) e devolve uma lista
+    de segmentos [{start, end, text}], já quebrados em pedaços curtos (estilo
+    legenda de Reels/TikTok) mesmo quando a fala original vem em frases longas."""
+    audio_path = pasta_trabalho / "audio_transcricao.mp3"
+    extrair_audio_para_transcricao(input_path, str(audio_path))
+
+    with open(audio_path, "rb") as f:
+        resp = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            files={"file": (audio_path.name, f, "audio/mpeg")},
+            data={"model": "whisper-1", "response_format": "verbose_json"},
+            timeout=180,
+        )
+    resp.raise_for_status()
+    dados = resp.json()
+
+    segmentos = []
+    for seg in dados.get("segments", []):
+        inicio, fim = seg["start"], seg["end"]
+        texto = seg["text"].strip()
+        if not texto:
+            continue
+        duracao_seg = fim - inicio
+
+        if duracao_seg > max_duracao_segmento:
+            # Quebra frases longas em pedaços menores, dividindo o tempo
+            # proporcionalmente pelo número de palavras de cada pedaço.
+            palavras = texto.split()
+            n_partes = max(2, int(duracao_seg // max_duracao_segmento) + 1)
+            tam_parte = max(1, len(palavras) // n_partes)
+            for i in range(0, len(palavras), tam_parte):
+                bloco = palavras[i:i + tam_parte]
+                if not bloco:
+                    continue
+                frac_ini = i / len(palavras)
+                frac_fim = min(1.0, (i + tam_parte) / len(palavras))
+                segmentos.append({
+                    "start": inicio + frac_ini * duracao_seg,
+                    "end": inicio + frac_fim * duracao_seg,
+                    "text": " ".join(bloco),
+                })
+        else:
+            segmentos.append({"start": inicio, "end": fim, "text": texto})
+
+    return segmentos
+
+
+def _filtro_segmento_texto(idx: int, label_entrada: str, label_saida: str, txt_path: Path,
+                            modelo: str, cor_fundo_citacao: str,
+                            inicio: float = None, fim: float = None) -> str:
+    """Monta o pedaço do filtro ffmpeg pra desenhar UM trecho de texto,
+    opcionalmente só visível entre 'inicio' e 'fim' segundos (pra legenda
+    automática sincronizada com a fala)."""
+    enable_clause = f":enable='between(t,{inicio:.2f},{fim:.2f})'" if inicio is not None else ""
+
+    if modelo == "citacao":
+        cor_fundo, cor_texto = CORES_FAIXA_CITACAO.get(cor_fundo_citacao, CORES_FAIXA_CITACAO["branco"])
+        return (
+            f"[{label_entrada}]drawbox=x=0:y={FAIXA_Y_INICIO_BOX}:w=iw:h={FAIXA_ALTURA_BOX}:"
+            f"color={cor_fundo}:t=fill{enable_clause}[vb{idx}]"
+            f";[vb{idx}]drawtext=fontfile={FONTE_SERIF}:textfile={txt_path}:"
+            f"fontcolor={cor_texto}:fontsize=h/24:line_spacing=8:"
+            f"x=(w-text_w)/2:y=({FAIXA_Y_INICIO_TXT})+({FAIXA_ALTURA_TXT}-text_h)/2{enable_clause}[{label_saida}]"
+        )
+    estilo = MODELOS_LEGENDA.get(modelo, MODELOS_LEGENDA["classico"])
+    return (
+        f"[{label_entrada}]drawtext=fontfile={FONTE_PADRAO}:textfile={txt_path}:"
+        f"{estilo}{enable_clause}[{label_saida}]"
+    )
+
+
+def construir_filtro_legenda(pasta_trabalho: Path, legenda_modelo: str, cor_fundo_citacao: str,
+                              label_inicial: str, texto_manual: str = "", segmentos: list = None):
+    """Monta a cadeia de filtros de legenda: um drawtext por segmento (modo
+    automático, sincronizado no tempo) ou um único drawtext fixo (modo manual)."""
+    partes = []
+    label_atual = label_inicial
+
+    if segmentos:
+        for i, seg in enumerate(segmentos):
+            txt_path = pasta_trabalho / f"legenda_{i}.txt"
+            txt_path.write_text(seg["text"], encoding="utf-8")
+            label_saida = f"vtxt{i}"
+            partes.append(_filtro_segmento_texto(
+                i, label_atual, label_saida, txt_path, legenda_modelo, cor_fundo_citacao,
+                seg["start"], seg["end"],
+            ))
+            label_atual = label_saida
+    elif texto_manual:
+        txt_path = pasta_trabalho / "legenda.txt"
+        txt_path.write_text(texto_manual, encoding="utf-8")
+        label_saida = "vtxtM"
+        partes.append(_filtro_segmento_texto(
+            0, label_atual, label_saida, txt_path, legenda_modelo, cor_fundo_citacao,
+        ))
+        label_atual = label_saida
+
+    return ";".join(partes), label_atual
 
 
 def processar_video_com_cta(input_path: str, cta_path: str, brilho: float,
                              duracao: float, output_path: str,
                              legenda_texto: str = "", legenda_modelo: str = "classico",
                              cor_fundo_citacao: str = "branco",
+                             legenda_segmentos: list = None,
                              pasta_trabalho: Path = None):
-    """Aplica filtro de brilho, legenda opcional, e cola a imagem de CTA no final."""
+    """Aplica filtro de brilho, legenda opcional (manual ou por segmentos
+    sincronizados), e cola a imagem de CTA no final."""
     w, h, fps, tem_audio = probe_video(input_path)
 
-    filtro_video = f"[0:v]eq=brightness={brilho}[v0eq]"
-    ultima_label_v0 = "v0eq"
+    # Se o vídeo original é maior que o limite, redimensiona antes de tudo —
+    # isso é o que mais acelera o processamento (menos pixels em cada filtro).
+    filtro_video = f"[0:v]scale={w}:{h}[v0scaled];[v0scaled]eq=brightness={brilho}[v0eq]"
+    label_apos_brilho = "v0eq"
 
-    if legenda_texto:
-        # Escreve o texto num arquivo (evita problemas de escaping com
-        # acentos, aspas, dois-pontos etc dentro do filtro do ffmpeg).
-        txt_path = pasta_trabalho / "legenda.txt"
-        txt_path.write_text(legenda_texto, encoding="utf-8")
-
-        if legenda_modelo == "citacao":
-            # Modelo especial: faixa colorida full-width + texto serifado,
-            # centralizado (precisa de um drawbox extra antes do drawtext).
-            cor_fundo, cor_texto = CORES_FAIXA_CITACAO.get(
-                cor_fundo_citacao, CORES_FAIXA_CITACAO["branco"]
-            )
-            filtro_video += (
-                f";[v0eq]drawbox=x=0:y={FAIXA_Y_INICIO_BOX}:w=iw:h={FAIXA_ALTURA_BOX}:"
-                f"color={cor_fundo}:t=fill[v0box]"
-                f";[v0box]drawtext=fontfile={FONTE_SERIF}:textfile={txt_path}:"
-                f"fontcolor={cor_texto}:fontsize=h/24:line_spacing=8:"
-                f"x=(w-text_w)/2:y=({FAIXA_Y_INICIO_TXT})+({FAIXA_ALTURA_TXT}-text_h)/2[v0txt]"
-            )
-        else:
-            estilo = MODELOS_LEGENDA.get(legenda_modelo, MODELOS_LEGENDA["classico"])
-            filtro_video += (
-                f";[v0eq]drawtext=fontfile={FONTE_PADRAO}:textfile={txt_path}:"
-                f"{estilo}[v0txt]"
-            )
-        ultima_label_v0 = "v0txt"
+    if legenda_segmentos or legenda_texto:
+        pedacos, label_apos_brilho = construir_filtro_legenda(
+            pasta_trabalho, legenda_modelo, cor_fundo_citacao,
+            label_inicial="v0eq", texto_manual=legenda_texto, segmentos=legenda_segmentos,
+        )
+        filtro_video += ";" + pedacos
 
     filtro = (
         f"{filtro_video};"
         f"[1:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}[v1];"
-        f"[{ultima_label_v0}][v1]concat=n=2:v=1:a=0[outv]"
+        f"[{label_apos_brilho}][v1]concat=n=2:v=1:a=0[outv]"
     )
 
     cmd = ["ffmpeg", "-y", "-i", input_path, "-loop", "1", "-t", str(duracao), "-i", cta_path]
 
+    # "ultrafast" prioriza velocidade — importante no plano gratuito (CPU
+    # bem limitada). O ganho de qualidade de presets mais lentos não compensa
+    # o tempo extra aqui.
     if tem_audio:
         filtro += f";[0:a]apad=pad_dur={duracao}[outa]"
         cmd += ["-filter_complex", filtro, "-map", "[outv]", "-map", "[outa]",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac"]
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-c:a", "aac"]
     else:
         cmd += ["-filter_complex", filtro, "-map", "[outv]",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
 
     cmd += ["-movflags", "+faststart", output_path]
 
@@ -589,7 +1163,7 @@ def processar_video_com_cta(input_path: str, cta_path: str, brilho: float,
 
 def editor_job_worker(job_id: str, pasta_videos: Path, cta_path: str, brilho: float,
                        duracao: float, legenda_texto: str, legenda_modelo: str,
-                       cor_fundo_citacao: str):
+                       cor_fundo_citacao: str, modo_legenda: str, api_key: str):
     job = EDITOR_JOBS[job_id]
     pasta_saida = pasta_videos / "saida"
     pasta_saida.mkdir(exist_ok=True)
@@ -603,11 +1177,19 @@ def editor_job_worker(job_id: str, pasta_videos: Path, cta_path: str, brilho: fl
 
     for v in videos:
         try:
+            legenda_segmentos = None
+            texto_para_video = legenda_texto
+
+            if modo_legenda == "automatica" and legenda_texto == "__AUTO__":
+                job["arquivo_atual"] = f"transcrevendo {v.name}"
+                legenda_segmentos = transcrever_segmentos(api_key, str(v), pasta_videos)
+                texto_para_video = ""  # usa os segmentos, não texto fixo
+
             saida = pasta_saida / f"editado_{v.stem}.mp4"
             processar_video_com_cta(
                 str(v), cta_path, brilho, duracao, str(saida),
-                legenda_texto=legenda_texto, legenda_modelo=legenda_modelo,
-                cor_fundo_citacao=cor_fundo_citacao,
+                legenda_texto=texto_para_video, legenda_modelo=legenda_modelo,
+                cor_fundo_citacao=cor_fundo_citacao, legenda_segmentos=legenda_segmentos,
                 pasta_trabalho=pasta_videos,
             )
             processados.append(saida)
@@ -632,6 +1214,308 @@ def editor_job_worker(job_id: str, pasta_videos: Path, cta_path: str, brilho: fl
     job["criado_em"] = time.time()
 
     shutil.rmtree(pasta_videos, ignore_errors=True)
+
+
+# ---------------------------------------------------------
+# Gerador IA: copies + imagens via OpenAI, cortadas em 9:16,
+# com opção de virar reels animados com som ambiente
+# ---------------------------------------------------------
+GERADOR_BASE_TMP = Path(tempfile.gettempdir()) / "gerador_jobs"
+GERADOR_BASE_TMP.mkdir(exist_ok=True)
+GERADOR_JOBS = {}
+MAX_IMAGENS_GERADOR = 40
+
+PROMPTS_ESTILO = {
+    "foto_livro": (
+        "A realistic photo of a hand holding an open book, warm natural sunlight, "
+        "shadows of leaves across the page, cozy aesthetic desk or balcony background, "
+        "no text or letters anywhere in the image, empty blank page, photorealistic"
+    ),
+    "ilustrado_cosmico": (
+        "A dreamy illustrated cosmic night sky scene, galaxy, stars, soft silhouette "
+        "of a person looking at the stars, purple and pink nebula colors, no text or "
+        "letters anywhere in the image, digital painting style"
+    ),
+}
+
+
+def chamar_openai_copies(api_key: str, funil: str, exemplos: list, quantidade: int) -> list:
+    """Pede pra OpenAI gerar N copies (título/apoio/cta) originais, inspiradas
+    no funil e nos exemplos de referência fornecidos pelo usuário."""
+    exemplos_txt = "\n".join(f"- {e}" for e in exemplos[:15]) if exemplos else "(nenhum exemplo fornecido ainda)"
+
+    prompt_sistema = (
+        "Você é um copywriter especialista em conteúdo viral para Instagram/Facebook "
+        "no nicho de conteúdo espiritual/motivacional/relacionamentos. Sua tarefa é criar "
+        "frases curtas, originais e emocionalmente impactantes — nunca copie os exemplos "
+        "literalmente, apenas se inspire no tom, estrutura e nível de impacto deles."
+    )
+    prompt_usuario = (
+        f"Funil/nicho atual: {funil}\n\n"
+        f"Exemplos de copies que estão convertendo bem nesse nicho:\n{exemplos_txt}\n\n"
+        f"Crie {quantidade} copies ORIGINAIS e diferentes entre si, no mesmo espírito "
+        f"emocional dos exemplos. Cada copy deve ter:\n"
+        f"- titulo: frase principal, curta e impactante (máx 8 palavras)\n"
+        f"- apoio: uma segunda frase complementar (máx 12 palavras)\n"
+        f"- cta: uma chamada pra ação curta, ex: 'leia o primeiro comentário'\n\n"
+        f'Responda SOMENTE em JSON válido, no formato: '
+        f'{{"copies": [{{"titulo": "...", "apoio": "...", "cta": "..."}}]}}'
+    )
+
+    resp = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": prompt_sistema},
+                {"role": "user", "content": prompt_usuario},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.9,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    conteudo = resp.json()["choices"][0]["message"]["content"]
+    dados = json.loads(conteudo)
+    return dados.get("copies", [])
+
+
+def chamar_openai_imagem_grade(api_key: str, estilo: str) -> Image.Image:
+    """Pede pra OpenAI gerar 1 imagem retrato dividida em grade 2x2 (4 cenas
+    diferentes, sem texto), pra depois cortar em 4 imagens 9:16 separadas."""
+    base_prompt = PROMPTS_ESTILO.get(estilo, PROMPTS_ESTILO["foto_livro"])
+    prompt = (
+        f"A single image split into an even 2x2 grid by a thin visible white "
+        f"dividing line (2 columns, 2 rows). Each of the 4 quadrants shows a "
+        f"different variation of this scene: {base_prompt}. "
+        f"Absolutely no text, letters, numbers or writing anywhere in the image."
+    )
+
+    resp = requests.post(
+        "https://api.openai.com/v1/images/generations",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-image-1",
+            "prompt": prompt,
+            "size": "1024x1536",
+            "n": 1,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    dados = resp.json()["data"][0]
+
+    if "b64_json" in dados and dados["b64_json"]:
+        img_bytes = base64.b64decode(dados["b64_json"])
+    else:
+        img_resp = requests.get(dados["url"], timeout=60)
+        img_resp.raise_for_status()
+        img_bytes = img_resp.content
+
+    return Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+
+def cortar_grade_em_quatro(img: Image.Image) -> list:
+    """Corta uma imagem 1024x1536 (grade 2x2) em 4 imagens 9:16 (1080x1920)."""
+    w, h = img.size
+    qw, qh = w // 2, h // 2
+
+    quadrantes = []
+    for i in range(4):
+        x = (i % 2) * qw
+        y = (i // 2) * qh
+        quad = img.crop((x, y, x + qw, y + qh))
+        largura_alvo = int(qh * 9 / 16)
+        offset_x = max(0, (qw - largura_alvo) // 2)
+        quad_916 = quad.crop((offset_x, 0, offset_x + largura_alvo, qh))
+        quad_final = quad_916.resize((1080, 1920), Image.LANCZOS)
+        quadrantes.append(quad_final)
+    return quadrantes
+
+
+def _quebrar_texto(draw, texto, fonte, largura_max):
+    palavras = texto.split()
+    linhas, linha_atual = [], ""
+    for palavra in palavras:
+        teste = (linha_atual + " " + palavra).strip()
+        bbox = draw.textbbox((0, 0), teste, font=fonte)
+        if bbox[2] - bbox[0] <= largura_max:
+            linha_atual = teste
+        else:
+            if linha_atual:
+                linhas.append(linha_atual)
+            linha_atual = palavra
+    if linha_atual:
+        linhas.append(linha_atual)
+    return linhas
+
+
+def aplicar_texto_quote(img: Image.Image, titulo: str, apoio: str, cta: str,
+                         cor_destaque=(255, 45, 85)) -> Image.Image:
+    """Sobrepõe título + apoio (topo) e CTA (base) na imagem, com gradientes
+    escuros por trás pra garantir legibilidade em qualquer fundo."""
+    img = img.convert("RGBA")
+    w, h = img.size
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    for y in range(int(h * 0.42)):
+        alpha = int(190 * (1 - y / (h * 0.42)) ** 0.6)
+        draw.line([(0, y), (w, y)], fill=(0, 0, 0, alpha))
+
+    faixa_baixo = int(h * 0.20)
+    for y in range(faixa_baixo):
+        yy = h - faixa_baixo + y
+        alpha = int(200 * (y / faixa_baixo) ** 0.6)
+        draw.line([(0, yy), (w, yy)], fill=(0, 0, 0, alpha))
+
+    fonte_titulo = ImageFont.truetype(FONTE_SERIF, 58)
+    fonte_apoio = ImageFont.truetype(FONTE_SERIF, 34)
+    fonte_cta = ImageFont.truetype(FONTE_PADRAO, 36)
+
+    margem = 70
+    y_cursor = 90
+
+    for linha in _quebrar_texto(draw, titulo, fonte_titulo, w - margem * 2):
+        draw.text((w / 2, y_cursor), linha, font=fonte_titulo, fill=(255, 255, 255, 255), anchor="ma")
+        bbox = draw.textbbox((0, 0), linha, font=fonte_titulo)
+        y_cursor += (bbox[3] - bbox[1]) + 14
+
+    if apoio:
+        y_cursor += 16
+        for linha in _quebrar_texto(draw, apoio, fonte_apoio, w - margem * 2):
+            draw.text((w / 2, y_cursor), linha, font=fonte_apoio, fill=(230, 230, 230, 255), anchor="ma")
+            bbox = draw.textbbox((0, 0), linha, font=fonte_apoio)
+            y_cursor += (bbox[3] - bbox[1]) + 10
+
+    if cta:
+        texto_cta = cta.upper()
+        y_cta = h - 130
+        draw.text((w / 2, y_cta), texto_cta, font=fonte_cta, fill=cor_destaque + (255,), anchor="ma")
+        draw.text((w / 2, y_cta + 55), "\U0001F447", font=fonte_cta, fill=(255, 255, 255, 255), anchor="ma")
+
+    return Image.alpha_composite(img, overlay).convert("RGB")
+
+
+def gerar_som_ambiente(caminho_saida: str, duracao: float = 6.0):
+    """Sintetiza um som ambiente suave (acorde de 3 tons com fade), sem
+    depender de nenhuma API — usado como música de fundo dos reels."""
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"sine=frequency=196:duration={duracao}",
+        "-f", "lavfi", "-i", f"sine=frequency=246.94:duration={duracao}",
+        "-f", "lavfi", "-i", f"sine=frequency=293.66:duration={duracao}",
+        "-filter_complex",
+        "[0][1][2]amix=inputs=3:duration=longest:weights='0.5 0.4 0.35',"
+        "volume=0.35,afade=t=in:d=1.5,afade=t=out:st=" + str(max(0, duracao - 1.5)) + ":d=1.5,lowpass=f=2000",
+        "-ar", "44100", caminho_saida,
+    ]
+    subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+
+
+def criar_reel_de_imagem(caminho_imagem: str, caminho_audio: str, caminho_saida: str, duracao: float = 6.0):
+    """Anima a imagem com um zoom lento (Ken Burns) e junta com o som ambiente."""
+    frames = int(duracao * 25)
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", caminho_imagem,
+        "-i", caminho_audio,
+        "-vf", f"zoompan=z='min(zoom+0.0008,1.15)':d={frames}:s=1080x1920:fps=25",
+        "-t", str(duracao),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest",
+        caminho_saida,
+    ]
+    subprocess.run(cmd, capture_output=True, timeout=120, check=True)
+
+
+def gerador_job_worker(job_id: str, api_key: str, funil: str, exemplos: list,
+                        estilo: str, quantidade: int, gerar_reels: bool):
+    job = GERADOR_JOBS[job_id]
+    pasta_job = GERADOR_BASE_TMP / job_id
+    pasta_job.mkdir(exist_ok=True)
+
+    try:
+        job["status"] = "gerando_copies"
+        copies = chamar_openai_copies(api_key, funil, exemplos, quantidade)
+        if not copies:
+            job["status"] = "erro"
+            job["erro"] = "A IA não retornou nenhuma copy. Tenta de novo."
+            return
+
+        job["status"] = "gerando_imagens"
+        job["total"] = len(copies)
+        job["concluidos"] = 0
+
+        imagens_finais = []
+        for i in range(0, len(copies), 4):
+            lote = copies[i:i + 4]
+            grade = chamar_openai_imagem_grade(api_key, estilo)
+            quadrantes = cortar_grade_em_quatro(grade)
+
+            for quad, copy in zip(quadrantes, lote):
+                final = aplicar_texto_quote(
+                    quad, copy.get("titulo", ""), copy.get("apoio", ""), copy.get("cta", "")
+                )
+                caminho = pasta_job / f"imagem_{len(imagens_finais):02d}.png"
+                final.save(caminho)
+                imagens_finais.append(caminho)
+                job["concluidos"] += 1
+
+        arquivos_finais = list(imagens_finais)
+
+        if gerar_reels:
+            job["status"] = "gerando_reels"
+            job["concluidos_reels"] = 0
+            audio_path = pasta_job / "som_ambiente.mp3"
+            gerar_som_ambiente(str(audio_path), duracao=6.0)
+
+            for img_path in imagens_finais:
+                reel_path = pasta_job / f"{img_path.stem}_reel.mp4"
+                try:
+                    criar_reel_de_imagem(str(img_path), str(audio_path), str(reel_path), duracao=6.0)
+                    arquivos_finais.append(reel_path)
+                except Exception:
+                    pass  # se um reel falhar, mantém a imagem estática e segue
+                job["concluidos_reels"] += 1
+
+        zip_path = GERADOR_BASE_TMP / f"{job_id}.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in arquivos_finais:
+                zf.write(f, arcname=f.name)
+
+        job["status"] = "concluido"
+        job["zip_path"] = str(zip_path)
+        job["total"] = len(imagens_finais)
+        job["criado_em"] = time.time()
+
+    except requests.exceptions.HTTPError as e:
+        job["status"] = "erro"
+        detalhe = ""
+        try:
+            detalhe = e.response.json().get("error", {}).get("message", "")
+        except Exception:
+            pass
+        job["erro"] = f"Erro na API da OpenAI: {detalhe or str(e)}"
+    except Exception as e:
+        job["status"] = "erro"
+        job["erro"] = str(e)
+    finally:
+        # Mantém as imagens/vídeos zipados, mas limpa os arquivos soltos
+        for f in pasta_job.glob("*"):
+            if f.suffix != ".zip":
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
 
 
 def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int):
@@ -756,7 +1640,16 @@ def editor_iniciar():
     duracao = max(1, min(duracao, 15))
 
     usar_legenda = request.form.get("usar_legenda", "0") == "1"
-    legenda_texto = request.form.get("texto_legenda", "").strip() if usar_legenda else ""
+    modo_legenda = request.form.get("modo_legenda", "manual").strip()
+    api_key = request.form.get("api_key", "").strip()
+
+    if usar_legenda and modo_legenda == "automatica":
+        if not api_key:
+            return jsonify({"erro": "Configura sua chave OpenAI na aba Config primeiro"}), 400
+        legenda_texto = "__AUTO__"  # sinaliza pro worker que é modo automático
+    else:
+        legenda_texto = request.form.get("texto_legenda", "").strip() if usar_legenda else ""
+
     legenda_modelo = request.form.get("modelo_legenda", "classico").strip()
     modelos_validos = set(MODELOS_LEGENDA.keys()) | {"citacao"}
     if legenda_modelo not in modelos_validos:
@@ -788,7 +1681,7 @@ def editor_iniciar():
     t = threading.Thread(
         target=editor_job_worker,
         args=(job_id, pasta_job, str(cta_path), brilho, duracao, legenda_texto,
-              legenda_modelo, cor_fundo_citacao),
+              legenda_modelo, cor_fundo_citacao, modo_legenda, api_key),
         daemon=True,
     )
     t.start()
@@ -805,6 +1698,7 @@ def editor_status(job_id):
         "status": job["status"],
         "concluidos": job.get("concluidos", 0),
         "total": job.get("total", 0),
+        "arquivo_atual": job.get("arquivo_atual", ""),
     }
     if job["status"] == "erro":
         resposta["erro"] = job.get("erro")
@@ -817,6 +1711,81 @@ def editor_baixar(job_id):
     if not job or job["status"] != "concluido":
         return jsonify({"erro": "arquivo ainda não está pronto"}), 400
     return send_file(job["zip_path"], as_attachment=True, download_name=f"editados_{job_id}.zip")
+
+
+@app.route("/gerador")
+def gerador_page():
+    return PAGINA_GERADOR_HTML
+
+
+@app.route("/config")
+def config_page():
+    return PAGINA_CONFIG_HTML
+
+
+@app.route("/api/gerador/iniciar", methods=["POST"])
+def gerador_iniciar():
+    data = request.get_json(force=True)
+    api_key = data.get("api_key", "").strip()
+    funil = data.get("funil", "").strip()
+    exemplos = data.get("exemplos", [])
+    estilo = data.get("estilo", "foto_livro")
+    gerar_reels = bool(data.get("gerar_reels", False))
+
+    if not api_key:
+        return jsonify({"erro": "Informe sua chave da API OpenAI"}), 400
+    if not funil:
+        return jsonify({"erro": "Descreva o funil/nicho atual"}), 400
+    if estilo not in PROMPTS_ESTILO:
+        estilo = "foto_livro"
+
+    try:
+        quantidade = int(data.get("quantidade", 8))
+    except (TypeError, ValueError):
+        quantidade = 8
+    quantidade = max(4, min(quantidade, MAX_IMAGENS_GERADOR))
+    quantidade = (quantidade + 3) // 4 * 4  # arredonda pra múltiplo de 4
+
+    job_id = uuid.uuid4().hex[:12]
+    GERADOR_JOBS[job_id] = {
+        "status": "gerando_copies",
+        "concluidos": 0,
+        "total": quantidade,
+        "criado_em": time.time(),
+    }
+
+    t = threading.Thread(
+        target=gerador_job_worker,
+        args=(job_id, api_key, funil, exemplos, estilo, quantidade, gerar_reels),
+        daemon=True,
+    )
+    t.start()
+
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/gerador/status/<job_id>")
+def gerador_status(job_id):
+    job = GERADOR_JOBS.get(job_id)
+    if not job:
+        return jsonify({"erro": "job não encontrado"}), 404
+    resposta = {
+        "status": job["status"],
+        "concluidos": job.get("concluidos", 0),
+        "concluidos_reels": job.get("concluidos_reels", 0),
+        "total": job.get("total", 0),
+    }
+    if job["status"] == "erro":
+        resposta["erro"] = job.get("erro")
+    return jsonify(resposta)
+
+
+@app.route("/api/gerador/baixar/<job_id>")
+def gerador_baixar(job_id):
+    job = GERADOR_JOBS.get(job_id)
+    if not job or job["status"] != "concluido":
+        return jsonify({"erro": "arquivo ainda não está pronto"}), 400
+    return send_file(job["zip_path"], as_attachment=True, download_name=f"gerado_{job_id}.zip")
 
 
 @app.route("/api/iniciar", methods=["POST"])
@@ -902,6 +1871,16 @@ def limpar_jobs_antigos():
         if pasta.exists():
             shutil.rmtree(pasta, ignore_errors=True)
         EDITOR_JOBS.pop(jid, None)
+
+    expirados_gerador = [jid for jid, j in GERADOR_JOBS.items() if agora - j.get("criado_em", agora) > 3600]
+    for jid in expirados_gerador:
+        zip_path = GERADOR_BASE_TMP / f"{jid}.zip"
+        if zip_path.exists():
+            zip_path.unlink()
+        pasta = GERADOR_BASE_TMP / jid
+        if pasta.exists():
+            shutil.rmtree(pasta, ignore_errors=True)
+        GERADOR_JOBS.pop(jid, None)
 
 
 if __name__ == "__main__":
