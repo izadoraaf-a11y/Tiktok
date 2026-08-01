@@ -7,9 +7,12 @@ import uuid
 import threading
 import time
 import base64
+import json
+import subprocess
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file, Response
+from werkzeug.utils import secure_filename
 
 import yt_dlp
 
@@ -70,10 +73,21 @@ PAGINA_HTML = """
   }
   .aviso { font-size: 12px; color: #777; margin-top: 24px; line-height: 1.5; }
   label { font-size: 13px; color: #a0a0a0; }
+  .nav { display: flex; gap: 8px; margin-bottom: 20px; }
+  .nav a {
+    flex: 1; text-align: center; padding: 10px; border-radius: 8px;
+    text-decoration: none; font-size: 13px; font-weight: 600; color: #888;
+    background: #1a1a1a; border: 1px solid #262626;
+  }
+  .nav a.ativo { color: #000; background: linear-gradient(135deg, #ff2d55, #25f4ee); border: none; }
 </style>
 </head>
 <body>
   <div class="card">
+    <div class="nav">
+      <a href="/" class="ativo">Baixador</a>
+      <a href="/editor">Auto-editor</a>
+    </div>
     <h1>Baixador de Vídeos</h1>
     <p class="sub">TikTok, Instagram e Facebook — cole o link e baixe sem marca d'água</p>
 
@@ -173,6 +187,250 @@ async function checarStatus() {
 </html>
 """
 
+PAGINA_EDITOR_HTML = """
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auto-editor</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#0f0f0f">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Roboto, Arial, sans-serif;
+    background: #0f0f0f;
+    color: #f5f5f5;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px;
+    min-height: 100vh;
+  }
+  .card { width: 100%; max-width: 420px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #a0a0a0; font-size: 14px; margin-top: 0; margin-bottom: 20px; }
+  .nav { display: flex; gap: 8px; margin-bottom: 20px; }
+  .nav a {
+    flex: 1; text-align: center; padding: 10px; border-radius: 8px;
+    text-decoration: none; font-size: 13px; font-weight: 600; color: #888;
+    background: #1a1a1a; border: 1px solid #262626;
+  }
+  .nav a.ativo { color: #000; background: linear-gradient(135deg, #ff2d55, #25f4ee); border: none; }
+  label { font-size: 13px; color: #ccc; display: block; margin-bottom: 6px; font-weight: 600; }
+  .campo { margin-bottom: 18px; }
+  .ajuda { font-size: 11px; color: #666; margin-top: 4px; line-height: 1.4; }
+  input[type="file"] {
+    width: 100%; padding: 12px; border-radius: 10px; border: 1px dashed #333;
+    background: #1a1a1a; color: #ccc; font-size: 13px;
+  }
+  input[type="number"], input[type="range"] {
+    width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #333;
+    background: #1a1a1a; color: #fff; font-size: 16px;
+  }
+  input[type="range"] { padding: 0; height: 40px; }
+  .valor-brilho { text-align: center; font-size: 13px; color: #25f4ee; margin-top: 4px; }
+  button {
+    width: 100%; padding: 14px; border-radius: 10px; border: none;
+    background: linear-gradient(135deg, #ff2d55, #25f4ee);
+    color: #000; font-weight: 700; font-size: 16px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; }
+  #status-box { margin-top: 20px; padding: 16px; border-radius: 10px; background: #1a1a1a; display: none; }
+  #status-text { font-size: 14px; margin-bottom: 8px; }
+  .bar-bg { background: #333; border-radius: 6px; height: 8px; overflow: hidden; }
+  .bar-fill { background: linear-gradient(135deg, #ff2d55, #25f4ee); height: 100%; width: 0%; transition: width 0.3s; }
+  #download-link {
+    display: none; margin-top: 16px; text-align: center; padding: 14px;
+    border-radius: 10px; background: #16a34a; color: #fff; text-decoration: none; font-weight: 700;
+  }
+  .aviso { font-size: 12px; color: #777; margin-top: 24px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="nav">
+      <a href="/">Baixador</a>
+      <a href="/editor" class="ativo">Auto-editor</a>
+    </div>
+    <h1>Auto-editor</h1>
+    <p class="sub">Filtro de brilho + CTA em massa no final dos seus vídeos</p>
+
+    <div class="campo">
+      <label>Seus vídeos (pode escolher vários)</label>
+      <input id="videos" type="file" accept="video/*" multiple />
+      <p class="ajuda">Máximo de 5 vídeos por vez no plano gratuito.</p>
+    </div>
+
+    <div class="campo">
+      <label>Imagem do CTA</label>
+      <input id="cta" type="file" accept="image/*" />
+      <p class="ajuda">Essa imagem vai aparecer no final de cada vídeo.</p>
+    </div>
+
+    <div class="campo">
+      <label>Filtro de brilho</label>
+      <input id="brilho" type="range" min="-50" max="50" value="0" oninput="atualizarBrilho()" />
+      <p class="valor-brilho" id="valor-brilho">Neutro (0)</p>
+    </div>
+
+    <div class="campo">
+      <label>Duração do CTA (segundos)</label>
+      <input id="duracao" type="number" value="5" min="1" max="15" />
+    </div>
+
+    <div class="campo" style="display:flex; align-items:center; gap:8px;">
+      <input id="usar-legenda" type="checkbox" style="width:auto;" onchange="alternarLegenda()" />
+      <label style="margin-bottom:0;" for="usar-legenda">Adicionar legenda no vídeo</label>
+    </div>
+
+    <div id="campos-legenda" style="display:none;">
+      <div class="campo">
+        <label>Texto da legenda</label>
+        <input id="texto-legenda" type="text" placeholder="Ex: Não perca essa dica!" style="padding:12px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#fff; font-size:15px;" />
+      </div>
+      <div class="campo">
+        <label>Modelo da legenda</label>
+        <select id="modelo-legenda" onchange="alternarCorFundo()" style="width:100%; padding:12px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#fff; font-size:15px;">
+          <option value="classico">Clássico — branco, embaixo</option>
+          <option value="impacto">Impacto — amarelo, no topo</option>
+          <option value="neon">Neon — ciano, no centro</option>
+          <option value="minimalista">Minimalista — pequeno, canto</option>
+          <option value="citacao">Citação — faixa colorida, centro</option>
+        </select>
+      </div>
+
+      <div id="campo-cor-fundo" style="display:none;">
+        <div class="campo">
+          <label>Cor da faixa</label>
+          <select id="cor-fundo-citacao" style="width:100%; padding:12px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#fff; font-size:15px;">
+            <option value="branco">Branco (texto preto)</option>
+            <option value="preto">Preto (texto branco)</option>
+            <option value="vermelho">Vermelho (texto branco)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <button id="btn-processar" onclick="processar()">Processar vídeos</button>
+
+    <div id="status-box">
+      <div id="status-text">Preparando...</div>
+      <div class="bar-bg"><div id="bar-fill" class="bar-fill"></div></div>
+    </div>
+
+    <a id="download-link" href="#">Baixar ZIP com os vídeos prontos</a>
+
+    <p class="aviso">
+      Use só com vídeos que são seus (ou que você tem autorização de editar).
+      Processamento é pesado — no plano gratuito pode demorar alguns minutos
+      por vídeo. Vídeos muito grandes podem falhar por limite de memória.
+    </p>
+  </div>
+
+<script>
+let jobId = null;
+let poller = null;
+
+function atualizarBrilho() {
+  const v = document.getElementById('brilho').value;
+  const label = v == 0 ? 'Neutro (0)' : (v > 0 ? `Mais claro (+${v})` : `Mais escuro (${v})`);
+  document.getElementById('valor-brilho').textContent = label;
+}
+
+function alternarLegenda() {
+  const marcado = document.getElementById('usar-legenda').checked;
+  document.getElementById('campos-legenda').style.display = marcado ? 'block' : 'none';
+}
+
+function alternarCorFundo() {
+  const modelo = document.getElementById('modelo-legenda').value;
+  document.getElementById('campo-cor-fundo').style.display = modelo === 'citacao' ? 'block' : 'none';
+}
+
+async function processar() {
+  const videos = document.getElementById('videos').files;
+  const cta = document.getElementById('cta').files[0];
+  const brilho = document.getElementById('brilho').value;
+  const duracao = document.getElementById('duracao').value || 5;
+  const usarLegenda = document.getElementById('usar-legenda').checked;
+  const textoLegenda = document.getElementById('texto-legenda').value.trim();
+  const modeloLegenda = document.getElementById('modelo-legenda').value;
+  const corFundoCitacao = document.getElementById('cor-fundo-citacao').value;
+
+  if (videos.length === 0) { alert('Escolhe pelo menos 1 vídeo'); return; }
+  if (!cta) { alert('Escolhe a imagem do CTA'); return; }
+  if (videos.length > 5) { alert('Máximo de 5 vídeos por vez'); return; }
+  if (usarLegenda && !textoLegenda) { alert('Digite o texto da legenda ou desmarque a opção'); return; }
+
+  const formData = new FormData();
+  for (const v of videos) formData.append('videos', v);
+  formData.append('cta', cta);
+  formData.append('brilho', brilho);
+  formData.append('duracao', duracao);
+  formData.append('usar_legenda', usarLegenda ? '1' : '0');
+  formData.append('texto_legenda', textoLegenda);
+  formData.append('modelo_legenda', modeloLegenda);
+  formData.append('cor_fundo_citacao', corFundoCitacao);
+
+  document.getElementById('btn-processar').disabled = true;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('download-link').style.display = 'none';
+  document.getElementById('status-text').textContent = 'Enviando arquivos...';
+  document.getElementById('bar-fill').style.width = '5%';
+
+  let resp;
+  try {
+    resp = await fetch('/api/editor/iniciar', { method: 'POST', body: formData });
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Erro ao enviar. Tenta de novo.';
+    document.getElementById('btn-processar').disabled = false;
+    return;
+  }
+  const data = await resp.json();
+
+  if (data.erro) {
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-processar').disabled = false;
+    return;
+  }
+
+  jobId = data.job_id;
+  poller = setInterval(checarStatus, 3000);
+}
+
+async function checarStatus() {
+  const resp = await fetch('/api/editor/status/' + jobId);
+  const data = await resp.json();
+
+  if (data.status === 'processando') {
+    document.getElementById('status-text').textContent = `Processando... (${data.concluidos}/${data.total} prontos)`;
+    const pct = Math.min(90, 10 + (data.concluidos / Math.max(data.total,1)) * 80);
+    document.getElementById('bar-fill').style.width = pct + '%';
+  } else if (data.status === 'na_fila') {
+    document.getElementById('status-text').textContent = 'Preparando...';
+  } else if (data.status === 'concluido') {
+    clearInterval(poller);
+    document.getElementById('status-text').textContent = `Pronto! ${data.total} vídeo(s) processado(s).`;
+    document.getElementById('bar-fill').style.width = '100%';
+    const link = document.getElementById('download-link');
+    link.href = '/api/editor/baixar/' + jobId;
+    link.style.display = 'block';
+    document.getElementById('btn-processar').disabled = false;
+  } else if (data.status === 'erro') {
+    clearInterval(poller);
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-processar').disabled = false;
+  }
+}
+</script>
+</body>
+</html>
+"""
+
 # ---------------------------------------------------------
 # Configurações
 # ---------------------------------------------------------
@@ -210,6 +468,170 @@ def eh_video_unico(url: str) -> bool:
         r"fb\.watch/",                    # Facebook link curto
     ]
     return any(re.search(p, url) for p in padroes)
+
+
+# ---------------------------------------------------------
+# Auto-editor: filtro de brilho + CTA no final, em lote
+# ---------------------------------------------------------
+EDITOR_BASE_TMP = Path(tempfile.gettempdir()) / "editor_jobs"
+EDITOR_BASE_TMP.mkdir(exist_ok=True)
+EDITOR_JOBS = {}
+MAX_VIDEOS_EDITOR = 5
+MAX_TAMANHO_VIDEO_MB = 150
+FONTE_PADRAO = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONTE_SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
+
+# Modelos visuais de legenda: cada um define posição, cor e fundo.
+# {w}/{h}/{th} são substituídos pelos valores reais do vídeo em tempo de execução.
+MODELOS_LEGENDA = {
+    "classico": "fontcolor=white:fontsize=h/22:box=1:boxcolor=black@0.55:boxborderw=10:x=(w-text_w)/2:y=h-th-40",
+    "impacto": "fontcolor=yellow:fontsize=h/18:box=1:boxcolor=black@0.7:boxborderw=14:x=(w-text_w)/2:y=50",
+    "neon": "fontcolor=#25f4ee:fontsize=h/20:borderw=3:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2",
+    "minimalista": "fontcolor=white@0.9:fontsize=h/28:box=1:boxcolor=black@0.35:boxborderw=6:x=30:y=h-th-30",
+}
+
+# Modelo "citação": faixa colorida full-width com texto serifado centralizado.
+# Diferente dos outros, precisa de um filtro extra (drawbox) antes do drawtext,
+# por isso é tratado separado dos demais no processar_video_com_cta.
+# IMPORTANTE: drawbox usa as variáveis ih/iw (altura/largura de entrada),
+# já o drawtext usa h/w — são filtros diferentes com convenções diferentes.
+FAIXA_Y_INICIO_BOX = "ih*0.42"     # usado no drawbox
+FAIXA_ALTURA_BOX = "ih*0.18"       # usado no drawbox
+FAIXA_Y_INICIO_TXT = "h*0.42"      # usado no drawtext
+FAIXA_ALTURA_TXT = "h*0.18"        # usado no drawtext
+CORES_FAIXA_CITACAO = {
+    "branco": ("white@1", "black"),
+    "preto": ("black@1", "white"),
+    "vermelho": ("0xD62828@1", "white"),
+}
+
+
+def probe_video(path: str):
+    """Retorna (largura, altura, fps, tem_audio) de um vídeo via ffprobe."""
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0",
+           "-show_entries", "stream=width,height,r_frame_rate",
+           "-of", "json", path]
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    info = json.loads(out.stdout)["streams"][0]
+    w, h = info["width"], info["height"]
+    num, den = info["r_frame_rate"].split("/")
+    fps = float(num) / float(den) if float(den) != 0 else 30.0
+
+    cmd_audio = ["ffprobe", "-v", "error", "-select_streams", "a",
+                 "-show_entries", "stream=index", "-of", "csv=p=0", path]
+    out_audio = subprocess.run(cmd_audio, capture_output=True, text=True, timeout=30)
+    tem_audio = bool(out_audio.stdout.strip())
+
+    return w, h, fps, tem_audio
+
+
+def processar_video_com_cta(input_path: str, cta_path: str, brilho: float,
+                             duracao: float, output_path: str,
+                             legenda_texto: str = "", legenda_modelo: str = "classico",
+                             cor_fundo_citacao: str = "branco",
+                             pasta_trabalho: Path = None):
+    """Aplica filtro de brilho, legenda opcional, e cola a imagem de CTA no final."""
+    w, h, fps, tem_audio = probe_video(input_path)
+
+    filtro_video = f"[0:v]eq=brightness={brilho}[v0eq]"
+    ultima_label_v0 = "v0eq"
+
+    if legenda_texto:
+        # Escreve o texto num arquivo (evita problemas de escaping com
+        # acentos, aspas, dois-pontos etc dentro do filtro do ffmpeg).
+        txt_path = pasta_trabalho / "legenda.txt"
+        txt_path.write_text(legenda_texto, encoding="utf-8")
+
+        if legenda_modelo == "citacao":
+            # Modelo especial: faixa colorida full-width + texto serifado,
+            # centralizado (precisa de um drawbox extra antes do drawtext).
+            cor_fundo, cor_texto = CORES_FAIXA_CITACAO.get(
+                cor_fundo_citacao, CORES_FAIXA_CITACAO["branco"]
+            )
+            filtro_video += (
+                f";[v0eq]drawbox=x=0:y={FAIXA_Y_INICIO_BOX}:w=iw:h={FAIXA_ALTURA_BOX}:"
+                f"color={cor_fundo}:t=fill[v0box]"
+                f";[v0box]drawtext=fontfile={FONTE_SERIF}:textfile={txt_path}:"
+                f"fontcolor={cor_texto}:fontsize=h/24:line_spacing=8:"
+                f"x=(w-text_w)/2:y=({FAIXA_Y_INICIO_TXT})+({FAIXA_ALTURA_TXT}-text_h)/2[v0txt]"
+            )
+        else:
+            estilo = MODELOS_LEGENDA.get(legenda_modelo, MODELOS_LEGENDA["classico"])
+            filtro_video += (
+                f";[v0eq]drawtext=fontfile={FONTE_PADRAO}:textfile={txt_path}:"
+                f"{estilo}[v0txt]"
+            )
+        ultima_label_v0 = "v0txt"
+
+    filtro = (
+        f"{filtro_video};"
+        f"[1:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}[v1];"
+        f"[{ultima_label_v0}][v1]concat=n=2:v=1:a=0[outv]"
+    )
+
+    cmd = ["ffmpeg", "-y", "-i", input_path, "-loop", "1", "-t", str(duracao), "-i", cta_path]
+
+    if tem_audio:
+        filtro += f";[0:a]apad=pad_dur={duracao}[outa]"
+        cmd += ["-filter_complex", filtro, "-map", "[outv]", "-map", "[outa]",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac"]
+    else:
+        cmd += ["-filter_complex", filtro, "-map", "[outv]",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
+
+    cmd += ["-movflags", "+faststart", output_path]
+
+    resultado = subprocess.run(cmd, capture_output=True, text=True, timeout=280)
+    if resultado.returncode != 0:
+        raise RuntimeError(resultado.stderr[-800:])
+
+
+def editor_job_worker(job_id: str, pasta_videos: Path, cta_path: str, brilho: float,
+                       duracao: float, legenda_texto: str, legenda_modelo: str,
+                       cor_fundo_citacao: str):
+    job = EDITOR_JOBS[job_id]
+    pasta_saida = pasta_videos / "saida"
+    pasta_saida.mkdir(exist_ok=True)
+
+    videos = sorted(pasta_videos.glob("video_*"))
+    job["total"] = len(videos)
+    job["status"] = "processando"
+
+    processados = []
+    erros = []
+
+    for v in videos:
+        try:
+            saida = pasta_saida / f"editado_{v.stem}.mp4"
+            processar_video_com_cta(
+                str(v), cta_path, brilho, duracao, str(saida),
+                legenda_texto=legenda_texto, legenda_modelo=legenda_modelo,
+                cor_fundo_citacao=cor_fundo_citacao,
+                pasta_trabalho=pasta_videos,
+            )
+            processados.append(saida)
+            job["concluidos"] += 1
+        except Exception as e:
+            erros.append(f"{v.name}: {e}")
+
+    if not processados:
+        job["status"] = "erro"
+        job["erro"] = "Nenhum vídeo processado com sucesso. " + (erros[0] if erros else "")
+        shutil.rmtree(pasta_videos, ignore_errors=True)
+        return
+
+    zip_path = EDITOR_BASE_TMP / f"{job_id}.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in processados:
+            zf.write(f, arcname=f.name)
+
+    job["status"] = "concluido"
+    job["zip_path"] = str(zip_path)
+    job["total"] = len(processados)
+    job["criado_em"] = time.time()
+
+    shutil.rmtree(pasta_videos, ignore_errors=True)
 
 
 def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int):
@@ -304,6 +726,99 @@ def manifest():
     })
 
 
+@app.route("/editor")
+def editor_page():
+    return PAGINA_EDITOR_HTML
+
+
+@app.route("/api/editor/iniciar", methods=["POST"])
+def editor_iniciar():
+    videos = request.files.getlist("videos")
+    cta = request.files.get("cta")
+
+    if not videos:
+        return jsonify({"erro": "Envie pelo menos 1 vídeo"}), 400
+    if len(videos) > MAX_VIDEOS_EDITOR:
+        return jsonify({"erro": f"Máximo de {MAX_VIDEOS_EDITOR} vídeos por vez"}), 400
+    if not cta:
+        return jsonify({"erro": "Envie a imagem do CTA"}), 400
+
+    try:
+        brilho_bruto = float(request.form.get("brilho", 0))
+    except (TypeError, ValueError):
+        brilho_bruto = 0
+    brilho = max(-1.0, min(brilho_bruto / 100.0, 1.0))  # escala -50..50 -> -0.5..0.5
+
+    try:
+        duracao = float(request.form.get("duracao", 5))
+    except (TypeError, ValueError):
+        duracao = 5
+    duracao = max(1, min(duracao, 15))
+
+    usar_legenda = request.form.get("usar_legenda", "0") == "1"
+    legenda_texto = request.form.get("texto_legenda", "").strip() if usar_legenda else ""
+    legenda_modelo = request.form.get("modelo_legenda", "classico").strip()
+    modelos_validos = set(MODELOS_LEGENDA.keys()) | {"citacao"}
+    if legenda_modelo not in modelos_validos:
+        legenda_modelo = "classico"
+
+    cor_fundo_citacao = request.form.get("cor_fundo_citacao", "branco").strip()
+    if cor_fundo_citacao not in CORES_FAIXA_CITACAO:
+        cor_fundo_citacao = "branco"
+
+    job_id = uuid.uuid4().hex[:12]
+    pasta_job = EDITOR_BASE_TMP / job_id
+    pasta_job.mkdir(exist_ok=True)
+
+    for i, v in enumerate(videos):
+        nome_seguro = secure_filename(v.filename or f"video_{i}.mp4")
+        v.save(str(pasta_job / f"video_{i:02d}_{nome_seguro}"))
+
+    nome_cta = secure_filename(cta.filename or "cta.png")
+    cta_path = pasta_job / f"cta_{nome_cta}"
+    cta.save(str(cta_path))
+
+    EDITOR_JOBS[job_id] = {
+        "status": "na_fila",
+        "concluidos": 0,
+        "total": len(videos),
+        "criado_em": time.time(),
+    }
+
+    t = threading.Thread(
+        target=editor_job_worker,
+        args=(job_id, pasta_job, str(cta_path), brilho, duracao, legenda_texto,
+              legenda_modelo, cor_fundo_citacao),
+        daemon=True,
+    )
+    t.start()
+
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/editor/status/<job_id>")
+def editor_status(job_id):
+    job = EDITOR_JOBS.get(job_id)
+    if not job:
+        return jsonify({"erro": "job não encontrado"}), 404
+    resposta = {
+        "status": job["status"],
+        "concluidos": job.get("concluidos", 0),
+        "total": job.get("total", 0),
+    }
+    if job["status"] == "erro":
+        resposta["erro"] = job.get("erro")
+    return jsonify(resposta)
+
+
+@app.route("/api/editor/baixar/<job_id>")
+def editor_baixar(job_id):
+    job = EDITOR_JOBS.get(job_id)
+    if not job or job["status"] != "concluido":
+        return jsonify({"erro": "arquivo ainda não está pronto"}), 400
+    return send_file(job["zip_path"], as_attachment=True, download_name=f"editados_{job_id}.zip")
+
+
 @app.route("/api/iniciar", methods=["POST"])
 def iniciar():
     data = request.get_json(force=True)
@@ -370,12 +885,23 @@ def baixar(job_id):
 @app.before_request
 def limpar_jobs_antigos():
     agora = time.time()
+
     expirados = [jid for jid, j in JOBS.items() if agora - j.get("criado_em", agora) > 3600]
     for jid in expirados:
         zip_path = BASE_TMP / f"{jid}.zip"
         if zip_path.exists():
             zip_path.unlink()
         JOBS.pop(jid, None)
+
+    expirados_editor = [jid for jid, j in EDITOR_JOBS.items() if agora - j.get("criado_em", agora) > 3600]
+    for jid in expirados_editor:
+        zip_path = EDITOR_BASE_TMP / f"{jid}.zip"
+        if zip_path.exists():
+            zip_path.unlink()
+        pasta = EDITOR_BASE_TMP / jid
+        if pasta.exists():
+            shutil.rmtree(pasta, ignore_errors=True)
+        EDITOR_JOBS.pop(jid, None)
 
 
 if __name__ == "__main__":
