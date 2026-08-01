@@ -26,7 +26,7 @@ PAGINA_HTML = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Baixador de TikTok</title>
+<title>Baixador de Vídeos</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/icon-192.png">
@@ -34,7 +34,7 @@ PAGINA_HTML = """
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="TikTok DL">
+<meta name="apple-mobile-web-app-title" content="Baixador">
 <style>
   * { box-sizing: border-box; }
   body {
@@ -74,10 +74,10 @@ PAGINA_HTML = """
 </head>
 <body>
   <div class="card">
-    <h1>Baixador de TikTok</h1>
-    <p class="sub">Cole o @ ou o link da conta e baixe os vídeos sem marca d'água</p>
+    <h1>Baixador de Vídeos</h1>
+    <p class="sub">TikTok, Instagram e Facebook — cole o link e baixe sem marca d'água</p>
 
-    <input id="conta" type="text" placeholder="@usuario, link do perfil ou link de 1 vídeo" />
+    <input id="conta" type="text" placeholder="Link do vídeo, reel, post ou perfil" />
 
     <div id="campo-limite" style="display:flex; gap:10px;">
       <div style="flex:1;">
@@ -91,6 +91,7 @@ PAGINA_HTML = """
     </div>
     <p style="font-size:11px; color:#666; margin-top:-6px; margin-bottom:12px;">
       Contando a partir do mais recente. Ex: 1 até 10 = os 10 mais novos. 11 até 20 = os próximos 10.
+      (Intervalo só funciona pra conta do TikTok — Instagram e Facebook, use link de vídeo único.)
     </p>
 
     <button id="btn-iniciar" onclick="iniciar()">Baixar</button>
@@ -103,9 +104,10 @@ PAGINA_HTML = """
     <a id="download-link" href="#">Baixar ZIP com os vídeos</a>
 
     <p class="aviso">
-      Cole o link de um vídeo específico pra baixar só ele, ou o @/link da conta
-      pra baixar em lote. Perfis privados não funcionam. Uso pessoal — respeite
-      os direitos dos criadores.
+      TikTok: aceita vídeo único ou conta inteira (com intervalo). Instagram e
+      Facebook: funciona melhor com link de post/reel/vídeo específico —
+      perfis e conteúdo privado não funcionam nessas duas plataformas sem login.
+      Uso pessoal — respeite os direitos dos criadores.
     </p>
   </div>
 
@@ -189,13 +191,25 @@ def normalizar_url(entrada: str) -> str:
     entrada = entrada.strip()
     if entrada.startswith("http"):
         return entrada
+    # Sem "http", assume que é @usuario do TikTok (Instagram/Facebook sempre
+    # precisam vir como link completo, colado direto do app).
     usuario = entrada.lstrip("@")
     return f"https://www.tiktok.com/@{usuario}"
 
 
 def eh_video_unico(url: str) -> bool:
-    """Detecta se o link é de um vídeo específico (não o perfil inteiro)."""
-    return bool(re.search(r"/video/\d+", url)) or "vm.tiktok.com" in url or "vt.tiktok.com" in url
+    """Detecta se o link é de um único vídeo/post (não perfil/conta inteira)."""
+    padroes = [
+        r"/video/\d+",           # TikTok
+        r"vm\.tiktok\.com",
+        r"vt\.tiktok\.com",
+        r"instagram\.com/(reel|p|tv)/",   # Instagram: reels, posts, IGTV
+        r"facebook\.com/.+/videos/",      # Facebook: vídeo em página/perfil
+        r"facebook\.com/watch/?\?v=",     # Facebook: watch?v=
+        r"facebook\.com/reel/",           # Facebook reels
+        r"fb\.watch/",                    # Facebook link curto
+    ]
+    return any(re.search(p, url) for p in padroes)
 
 
 def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int):
@@ -239,7 +253,8 @@ def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int):
         arquivos = list(pasta.glob("*.mp4"))
         if not arquivos:
             job["status"] = "erro"
-            job["erro"] = "Nenhum vídeo encontrado ou perfil privado/inexistente."
+            job["erro"] = ("Nenhum vídeo encontrado. Pode ser perfil/post privado, "
+                            "ou o Instagram/Facebook pediu login pra esse conteúdo.")
             return
 
         zip_path = BASE_TMP / f"{job_id}.zip"
