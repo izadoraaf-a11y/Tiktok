@@ -11,6 +11,7 @@ import json
 import subprocess
 import io
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
@@ -1161,6 +1162,49 @@ def processar_video_com_cta(input_path: str, cta_path: str, brilho: float,
         raise RuntimeError(resultado.stderr[-800:])
 
 
+# Quantos vídeos processar ao mesmo tempo. No plano Free/Starter (menos de
+# 1 CPU inteiro) o ganho é pequeno — vem principalmente das partes que
+# esperam rede/disco (upload, chamada da API de transcrição), não do
+# processamento de vídeo em si. A partir do plano Standard (1 CPU+) o ganho
+# fica bem mais real. Ajuste esse número conforme o plano do Render.
+EDITOR_WORKERS_PARALELOS = 2
+
+
+def _processar_um_video(v: Path, pasta_saida: Path, cta_path: str, brilho: float,
+                         duracao: float, legenda_texto: str, legenda_modelo: str,
+                         cor_fundo_citacao: str, modo_legenda: str, api_key: str,
+                         job: dict, lock: threading.Lock):
+    """Processa 1 vídeo isoladamente — cada vídeo ganha sua própria pasta de
+    trabalho temporária, pra não colidir com os outros rodando em paralelo."""
+    pasta_temp_video = pasta_saida.parent / f"tmp_{v.stem}"
+    pasta_temp_video.mkdir(exist_ok=True)
+
+    try:
+        legenda_segmentos = None
+        texto_para_video = legenda_texto
+
+        if modo_legenda == "automatica" and legenda_texto == "__AUTO__":
+            with lock:
+                job["arquivo_atual"] = f"transcrevendo {v.name}"
+            legenda_segmentos = transcrever_segmentos(api_key, str(v), pasta_temp_video)
+            texto_para_video = ""  # usa os segmentos, não texto fixo
+
+        saida = pasta_saida / f"editado_{v.stem}.mp4"
+        processar_video_com_cta(
+            str(v), cta_path, brilho, duracao, str(saida),
+            legenda_texto=texto_para_video, legenda_modelo=legenda_modelo,
+            cor_fundo_citacao=cor_fundo_citacao, legenda_segmentos=legenda_segmentos,
+            pasta_trabalho=pasta_temp_video,
+        )
+        with lock:
+            job["concluidos"] += 1
+        return ("ok", saida, None)
+    except Exception as e:
+        return ("erro", v.name, str(e))
+    finally:
+        shutil.rmtree(pasta_temp_video, ignore_errors=True)
+
+
 def editor_job_worker(job_id: str, pasta_videos: Path, cta_path: str, brilho: float,
                        duracao: float, legenda_texto: str, legenda_modelo: str,
                        cor_fundo_citacao: str, modo_legenda: str, api_key: str):
@@ -1174,28 +1218,23 @@ def editor_job_worker(job_id: str, pasta_videos: Path, cta_path: str, brilho: fl
 
     processados = []
     erros = []
+    lock = threading.Lock()
 
-    for v in videos:
-        try:
-            legenda_segmentos = None
-            texto_para_video = legenda_texto
-
-            if modo_legenda == "automatica" and legenda_texto == "__AUTO__":
-                job["arquivo_atual"] = f"transcrevendo {v.name}"
-                legenda_segmentos = transcrever_segmentos(api_key, str(v), pasta_videos)
-                texto_para_video = ""  # usa os segmentos, não texto fixo
-
-            saida = pasta_saida / f"editado_{v.stem}.mp4"
-            processar_video_com_cta(
-                str(v), cta_path, brilho, duracao, str(saida),
-                legenda_texto=texto_para_video, legenda_modelo=legenda_modelo,
-                cor_fundo_citacao=cor_fundo_citacao, legenda_segmentos=legenda_segmentos,
-                pasta_trabalho=pasta_videos,
+    with ThreadPoolExecutor(max_workers=EDITOR_WORKERS_PARALELOS) as executor:
+        futuros = [
+            executor.submit(
+                _processar_um_video, v, pasta_saida, cta_path, brilho, duracao,
+                legenda_texto, legenda_modelo, cor_fundo_citacao, modo_legenda,
+                api_key, job, lock,
             )
-            processados.append(saida)
-            job["concluidos"] += 1
-        except Exception as e:
-            erros.append(f"{v.name}: {e}")
+            for v in videos
+        ]
+        for futuro in as_completed(futuros):
+            status, resultado, detalhe = futuro.result()
+            if status == "ok":
+                processados.append(resultado)
+            else:
+                erros.append(f"{resultado}: {detalhe}")
 
     if not processados:
         job["status"] = "erro"
