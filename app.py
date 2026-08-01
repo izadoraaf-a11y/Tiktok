@@ -445,6 +445,7 @@ async function processar() {
   }
 
   jobId = data.job_id;
+  localStorage.setItem('editor_job_ativo', jobId);
   poller = setInterval(checarStatus, 3000);
 }
 
@@ -461,6 +462,7 @@ async function checarStatus() {
     document.getElementById('status-text').textContent = 'Preparando...';
   } else if (data.status === 'concluido') {
     clearInterval(poller);
+    localStorage.removeItem('editor_job_ativo');
     document.getElementById('status-text').textContent = `Pronto! ${data.total} vídeo(s) processado(s).`;
     document.getElementById('bar-fill').style.width = '100%';
     const link = document.getElementById('download-link');
@@ -469,14 +471,29 @@ async function checarStatus() {
     document.getElementById('btn-processar').disabled = false;
   } else if (data.status === 'erro') {
     clearInterval(poller);
+    localStorage.removeItem('editor_job_ativo');
     document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
     document.getElementById('btn-processar').disabled = false;
   }
 }
+
+// Retoma automaticamente um processamento que ficou rodando em segundo
+// plano no servidor (ex: você trocou de app e a tela "esqueceu" o job).
+(function retomarJobAtivo() {
+  const jobSalvo = localStorage.getItem('editor_job_ativo');
+  if (!jobSalvo) return;
+  jobId = jobSalvo;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('status-text').textContent = 'Retomando processamento anterior...';
+  document.getElementById('btn-processar').disabled = true;
+  poller = setInterval(checarStatus, 3000);
+  checarStatus();
+})();
 </script>
 </body>
 </html>
 """
+
 
 PAGINA_GERADOR_HTML = """
 <!DOCTYPE html>
