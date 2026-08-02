@@ -1,4 +1,3 @@
-
 import os
 import re
 import shutil
@@ -23,11 +22,6 @@ from werkzeug.utils import secure_filename
 import yt_dlp
 
 app = Flask(__name__)
-
-# Ícone do app (estilo TikTok: nota musical cyan/pink) embutido em base64,
-# pra não precisar de arquivo separado nem pasta de assets.
-ICON_192_B64 = "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"
-ICON_512_B64 = "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAAAD0eNT6AAAUDUlEQVR4nO3dP3IcxxXA4YaLEXABhiwyYKBiwtQpc93Lt1E59RmYsBQogMohL4CYDuShFotd7PzpmX7d7/silUumRkMV329ezy7u7u/vCyH9aH0BABXdtb4AnnvT+gISM+CBTG79mScQDiYAjmHYA7zu0p+TomBHAmAfBj7Adud/lgqCigRAHQY+wP4EQUUCYD1DH6Ct0z+HxcBCAmAZQx8gJjGwkAC4zdAH6IsYmEEAXGfwA/Rv+rNcCJwRAM8Z+gBjshU4IwD+YvAD5GErUASAwQ+QV+oQyBoABj8Ak5QhkC0ADH4ArkkVAlkCwOAHYK4UIfCP1hdwAMMfgDWGnh8jbwCG/o0D4BDDbgNGDACDH4DahguB0Y4ADH8A9jTMnBllAzDMbwgA4Q2xDRhhA2D4A9BC1/On9wDo+uYD0L1u51CvRwDd3nAAhtPlkUCPGwDDH4CIuppPvQVAVzcXgHS6mVO9HAF0c0MBSK+LI4EeNgCGPwA9Cj2/ogdA6JsHADeEnWORAyDsTQOABULOs6gBEPJmAcBK4eZaxAAId5MAoIJQ8y1aAIS6OQBQWZg5FykAwtwUANhRiHkXJQBC3AwAOEjzuRchAJrfBABooOn8ax0Ahj8AmTWbgy0DwPAHgEbzsFUAGP4A8LfD52KLADD8AeClQ+fj0QFg+APAdYfNySMDwPAHgNsOmZdHBYDhDwDz7T43W38MEABo4IgA8PQPAMvtOj/3DgDDHwDW222O7hkAhj8AbLfLPPUOAAAktFcAePoHgHqqz9U9AsDwB4D6qs7X2gFg+APAfqrNWe8AAEBCNQPA0z8A7K/KvK0VAIY/ABxn89x1BAAACdUIAE//AHC8TfPXBgAAEtoaAJ7+AaCd1XN4SwAY/gDQ3qp57AgAABJaGwCe/gEgjsVz2QYAABJaEwCe/gEgnkXz2QYAABJaGgCe/gEgrtlz2gYAABJaEgCe/gEgvlnz2gYAABKaGwCe/gGgHzfntg0AACQkAAAgoTkBYP0PAP15dX7bAABAQrcCwNM/APTr6hy3AQCAhAQAACT0WgBY/wNA/y7OcxsAAEhIAABAQtcCwPofAMbxYq7bAABAQgIAABK6FADW/8Dh3n772voSYHTP5vubVlcBxDV3GH//9HmXf27tXxd46e7+/v78f7MBgGRqPX1vGdzn1yACYBd3P/9CAEBee63d1wzva9ciBKCqqwFg+EMCR523Lxner12TCICq7krxKQBI58iX7Wr9s95+++olQajMBgCSaD1Abz3Ft3rxEBKyAYAsWg//mtdgGwB1nAaAp38YUKRhWfNahACs9qMUGwAYWsQBWfuaIv47Qg8EAAwq8mDcIwIi//tCRAIABtTDMNzjGnv494YoBAAwFNsAmGcKAC8AwiB6Gn57XmtP9wEa+GEDAAPpcejtHQE93hM4ggAAhicE4KXpmwAdAUAHnp6eZv19H/78o+o/9/H9x+q/Ziu+SRD+IgAgsLkD/5atw/vx/cdqv1YUQoDsBAAEVGvwn1s7vE8DYMuvE40IIDMBAIHsNfjPLR3g5wGw9teJSgiQkZcAIYijhn8p1wd6q1+nNS8JktHd/f29p39o6MjBf8mcp/g5g942APoiAKCh1sN/cmt4L3nSFwLQB0cA0EiU4V9K3VX+SMcCMDIbAGgg0vA/de3pfe1Qtw2AuGwA4GBRh38p9Z/ebQMgLhsAOFDk4X/q/Mm9xiC3DYBYbACAQzy+/zjERsBHBhmFAICD9PL0X8q+q/sRIqAUxwL0zxEAHKCn4X9qWtvvNbQdC0A7NgBAMyMdC0BvBADsrNen/1KOW9ePEgFCgJ68aX0BMILHd19aX0L3pgjo/Vjg7bevjgTogncAYKU5Q//t778dcCXj6T0CJkKAyAQALLD0SV8AbCMEYD8CAGZYu+IXAHWMEAIigGi8BAg3ON9vz0uCUJ8NALxiy/D39L8P2wCoQwDABTWe+gXAfkaIgFKEAG05AoAzVv7x+QIh2M4GAE7UHP42AMcZYSNgG8DRbADg/zz592uUbYCNAEcSAMAQHAvAMgIAiqf/kYwSAUKAvQkA0jP8x2MbALd5CZDU9hz+XgKMw0uC8JINADC8UbYBNgLUJABIy+o/F8cC8JwAAFIZJQKEAFsJACAd2wDwEiBJHbH+9xJgP7wkSEY2AEB6tgFkJAAAyhjHAt4NYIk3rS8Ajubtf17z+P5jl0cCjgBYSgAAnJk2AT2EgMHPWgIA4IqoIWDoU4MAALghwrGAoU9tAgBghhbbAEOfPQkAgAWOCAGDnyMIAIAVah8LGPocTQAArLR1G2Do05IAANhoyTbA0CcKAQBQwa1tgMFPNAIAoKLTEDD0iczPAgDYQe8/V4DxCQCAnTw9PZWnp6fWlwEXCQCAnYkAIhIAAAewDSAaLwEC7Ozh4aH1JcALAgBgJwY/kQkAgIoMfXohAAA2MvTpkQAAWMngp2cCAGABQ59RCACAGwx9RiQAAK4w+BmZAAA4YeiThQAAKAY/+QgAIC1Dn8z8LAAgle+//FoeHh4Mf9KzAQBS+P7Lrz//+vHdl1JKKR/++59WlwPNCQBgWKdD/5LHd19EAGkJAGAot4b+OdsAshIAwBCWDv5SDH1yEwBAt9YM/VIMfihFAACdMfShDgEAdMGKH+oSAEBYnvZhPwIACMXQh2MIACAEK344lgAAmvG0D+0IAOBwnvahPQEAHMLTPsQiAIDdGPoQlwAAqlsz+P/573/99f/99Ln25QAXCACgirVP+9PgB44lAIDVDH3olwAAFtuy4gdiEADALJ72YSwCAKjO0If4BABQhaEPfREAwCYGP/RJAACLGfrQPwEAzGLow1j+0foCAIDjCQAASEgAAEBCAgAAEhIAAJCQAACAhAQAACQkAAAgIQEAAAkJAABISAAAQEICAAASEgAAkJAAAICEBAAAJCQAACAhAQAACQkAAEhIAABAQgIAABISAACQkAAAgIQEAAAkJAAAICEBAAAJCQAASEgAAEBCAgAAEhIAAJCQAACAhAQAACQkAAAgIQEAAAkJAABISAAAQEICAAASEgAAkJAAAICEBAAAJCQAACAhAQAACQkAAEhIAABAQgIAABISAACQkAAAgIQEAAAkJAAAICEBAAAJCQAASEgAAEBCAgAAEhIAAJCQAACAhAQAACQkAAAgIQEAAAkJAABISAAAQEICAAASEgAAkJAAAICEBAAAJCQAACAhAQAACQkAAEhIAABAQgIAABISAACQkAAAgIQEAAAkJAAAICEBAAAJCQAASEgAAEBCAgAAEhIAAJDQm9YXAHDq7bevP//6+6fPDa8ExmYDAIT19tvXZ0EA1CMAgPCEANQnAIBuCAGoRwAA3REBsJ0AALpkGwDbCACgayIA1hEAQPdsA2A5AQAMQwTAfAIAGIoIgHkEADAcRwJwmwAAhiUC4DoBAAxNBMBlAgAYngiAlwQAVPb299/K299/a30Z1T2+/9j6EjYRAfDc3f39/Y/WFwFHenz3ZZdfd8Shf82HP/9ofQmr+RHD8BcBQDo1AyDT0L+mxxgQASAASKhGABj8L/UWAiKA7LwDAAsZ/pf19o6AdwLIzgaAdNZuAAz++XraBtgEkJUAIJ2lAWDwr9dLCIgAMnIEAK8w/Lfp7VgAMrEBIJ05GwCDv77o2wBbALKxAYAzhv8+om8DvBRINgIAThj++xIBEMeb1hcAERj8x5kiIPqRAIzOBoD0DP82om4DbAHIQgCQmuHflgiAdgQAaRn+MUSNABidACCV6SOAhn8sESPAFoDR+R4Ahnf+uX/DP66ILwb6fgBG5VMADOvSF/4Y/rE9vv8YMgJgRDYADOfaN/0Z/v2IFgG2AIzIOwAMxfAfQ8R3AmA0NgAM4bXv9zf8+xVpE2ALwGi8A0DXbv1gH8O/b94JgP04AqBbc36qH9TiY4GMxgaA7swd/J7+x2ALAPuwAaArhn9OXgqE+gQA3TD8c4sQAY4BGIkjAMJz1g9Qnw0AoS0d/p7+x2YLAPUIAMIy/LkkQgTACAQAIVn7A+xLABDOmuHv6T+X1lsAxwCMQAAQiid/gGMIAMJYO/w9/efUegsAvRMAhGD4s0bLCHAMQO8EAM1Z+wMcTwDQ1Jbh7+mfUhwFwFoCgGY8+QO0IwDokqd/TrXaAngPgJ4JAJrw9A/QlgDgcIY/QHsCgEPVGP7W/1ziZUBYRgAAQEICgMN4+mdvtgAwnwDgEM79AWIRAAAb+CggvRIA7K7W07/1P3M4BoB5BAAAJCQA2JWzf4CYBAC7qTn8rf9ZwjEA3CYAACAhAcAurP4BYhMAAJCQACA85/+s4T0AeJ0AoDrrf4D4BAAAJCQAqMrTP0AfBAAAJCQAqMbTP0A/BAAAJCQACM1HANnCRwHhOgFAFdb/ZPX90+fWlwCrCAAASEgAAEBCAgAAEhIAbOb8H6A/AgAAEhIAAJCQAABYyUcA6ZkAYBPn/wB9EgAAkJAAAICEBADACs7/6Z0AAICEBAAAJCQAWM0nAMjK+p8RCABC+/7Lr60vgY59+POP1pcAYQkAAEhIAAAsYP3PKAQAACQkAABm8vTPSAQAACQkAAAgIQFAeD4KyBq1PwJo/c9oBAAAJCQAAG7w9M+IBAAAJCQA6IL3AFii5vm/p39GJQAAICEBAHCFp39GJgDohmMA5qi1/jf8GZ0AAICEBACrffjvf1pfAuzC0z8ZCAC64hiA19RY/xv+ZCEAACAhAUB3bAG4xNM/LCMAAIrhTz4CAEjP8CcjAcAmrT4J4BiAU7V/9C9kIACA1Dz9k5UAoFu2AJSy7enf8CczAQCkZPiTnQBgs5bfCGgLkNvap3/DHwQAAxABORn+sI0AANIw/OFvAoAh2ALksubp3/CH5wQAVfjJgERm+MNLAoBh2ALksPTp3/CHywQAQxEBYzP8oR4BQDWOAYji+6fPhj/cIAAYji3AmOY+/Rv8MI8AoKooWwARMBbDH+oTAAxLBIxhzvC38oflBADVRdkCkIPBD+sIAIZmC9C3157+PfXDNgKA4YmAPt0a/sA2d/f39z9aXwRjenz3pfUlPPP2999aXwIzXRv+Bj/UYwNAGjYBfbg0/K37oT4bAHYVbQtQik1AZOfD39CH/QgAdicCmGMa/oY+HMMRACk5Dojlw59/WPPDwWwAOETELUApNgERPDw8tL4ESMkGgNRsAtoy/KEdAcAhIn87oAhow/CHthwBcKioRwETRwL7M/ghBhsAOGEbsC/DH+IQABwq8lHARATsw/CHWBwB0ET0o4CJI4HtDH6IyQaAJnrYBJRiG7CV4Q9xvWl9ARDdFAG2AfMZ/BCfIwCa6uUo4JQQuM7gh344AqCpXo4CTjkWuMzwh77YABBCj5uAUmwDSjH4oVcCgDB6jYBJphgw9KF/AoBQeo+AUsYOAYMfxiEACGeECChlrBAw+GE8d/f396WUIgIIZZQImPQYA99/+bXLlzSBeQQAYY0WAaciBsH5pxsMfxibACC0kSPgVIsgeO3jjIY/jE8AEF6WCLikRhgs/d4Cwx9yEAB0I3MIHMHgh1x8EyDdMKD2495CPgKArhhU9bmnkJMjALrlSGAbgx9ymzYAd02vAlYwwNZz7yC9u2kDUIotAB2zDZjH4Af+TwAwFiFwmcEPnLnzEiBDMeheck+AS2wAGFb2bYDBD7zi2RFAKSKAAWULAYMfuOGulOcbgFIEAIMbNQYMfWABAUBeo4SAwQ+sIACglP5iwNAHNroYAKWIABKLGgOGPlDJzy/+EwDwilZBYOADOxEAsNXWODDkgQYEAAAk9DMALn0ToB8MBADjeTbffRUwACQkAAAgoWsB4BgAAMbxYq7bAABAQgIAABJ6LQAcAwBA/y7OcxsAAEhIAABAQrcCwDEAAPTr6hy3AQCAhOYEgC0AAPTn1fltAwAACQkAAEhobgA4BgCAftyc2zYAAJDQkgCwBQCA+GbNaxsAAEhoaQDYAgBAXLPntA0AACS0JgBsAQAgnkXz2QYAABJaGwC2AAAQx+K5bAMAAAltCQBbAABob9U83roBEAEA0M7qOewIAAASqhEAtgAAcLxN89cGAAASqhUAtgAAcJzNc7fmBkAEAMD+qsxbRwAAkFDtALAFAID9VJuze2wARAAA1Fd1vu51BCACAKCe6nPVOwAAkNCeAWALAADb7TJP994AiAAAWG+3OXrEEYAIAIDldp2f3gEAgISOCgBbAACYb/e5eeQGQAQAwG2HzMujjwBEAABcd9icbPEOgAgAgJcOnY+tXgIUAQDwt8PnYstPAYgAAGg0D1t/DFAEAJBZsznYOgBKEQEA5NR0/kUIgFJEAAC5NJ97UQKglAA3AwAOEGLeRQqAUoLcFADYSZg5Fy0ASgl0cwCgolDzLWIAlBLsJgHARuHmWtQAKCXgzQKAFULOs8gBUErQmwYAM4WdY9EDoJTANw8AXhF6fr1pfQEzTTfxR9OrAIDbQg/+SQ8bgFNd3FQA0upmTvUWAKV0dHMBSKWr+dTLEcA5RwIARNHV4J/0uAE41eVNB2AY3c6h3gOglI5vPgBd63r+9HoEcM6RAABH6XrwT0bYAJwa4jcFgLCGmTOjbABO2QYAUNswg38yYgBMhAAAWw03+CejHQFcMuxvHgC7Gnp+jLwBOGUbAMBcQw/+SZYAmAgBAK5JMfgn2QJgIgQAmKQa/JOsATARAgB5pRz8k+wBMBECAHmkHvwTAfDc6X8UYgBgHIb+GQFwna0AQP8M/isEwG22AgB9MfRnEADLiAGAmAz9hQTAemIAoC1DfwMBUMf5f4SCAKA+A78iAbAPQQCwnYG/IwFwjEv/EYsCgL8Z9gf7H0e9q5TNQd0XAAAAAElFTkSuQmCC"
 
 PAGINA_HTML = """
 <!DOCTYPE html>
@@ -221,6 +215,11 @@ async function checarStatus() {
     localStorage.removeItem('baixador_job_ativo');
     document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
     document.getElementById('btn-iniciar').disabled = false;
+  } else if (data.erro || !resp.ok) {
+    clearInterval(poller);
+    localStorage.removeItem('baixador_job_ativo');
+    document.getElementById('status-text').textContent = 'Esse processamento anterior não foi encontrado (pode ter se perdido num reinício do servidor). Pode iniciar um novo.';
+    document.getElementById('btn-iniciar').disabled = false;
   }
 }
 
@@ -258,8 +257,7 @@ async function verRecentes() {
 
 // Retoma automaticamente um processamento que ficou rodando em segundo
 // plano no servidor (ex: você desligou o celular ou saiu do app).
-(function retomarJobAtivo() {
-  const jobSalvo = localStorage.getItem('baixador_job_ativo');
+(function retomarJobAtivo() {const jobSalvo = localStorage.getItem('baixador_job_ativo');
   if (!jobSalvo) return;
   jobId = jobSalvo;
   document.getElementById('status-box').style.display = 'block';
@@ -518,8 +516,7 @@ async function processar() {
   formData.append('cor_fundo_citacao', corFundoCitacao);
   formData.append('api_key', apiKey);
 
-  document.getElementById('btn-processar').disabled = true;
-  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('btn-processar').disabled = true;document.getElementById('status-box').style.display = 'block';
   document.getElementById('download-link').style.display = 'none';
   document.getElementById('status-text').textContent = 'Enviando arquivos...';
   document.getElementById('bar-fill').style.width = '5%';
@@ -575,6 +572,14 @@ async function checarStatus() {
     clearInterval(poller);
     localStorage.removeItem('editor_job_ativo');
     document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-processar').disabled = false;
+  } else if (data.erro || !resp.ok) {
+    // job não existe mais (perdido em algum reinício antigo do servidor) —
+    // limpa e libera pra começar um processamento novo, em vez de ficar
+    // perguntando pra sempre sobre um job que nunca mais vai responder.
+    clearInterval(poller);
+    localStorage.removeItem('editor_job_ativo');
+    document.getElementById('status-text').textContent = 'Esse processamento anterior não foi encontrado (pode ter se perdido num reinício do servidor). Pode iniciar um novo.';
     document.getElementById('btn-processar').disabled = false;
   }
 }
@@ -770,8 +775,7 @@ PAGINA_GERADOR_HTML = """
 
     <div class="campo">
       <label>Estilo visual</label>
-      <select id="estilo">
-        <option value="foto_livro">Foto realista — mão segurando livro/celular</option>
+      <select id="estilo"><option value="foto_livro">Foto realista — mão segurando livro/celular</option>
         <option value="ilustrado_cosmico">Ilustrado — cósmico/místico</option>
         <option value="personalizado">Meu estilo (dos exemplos que enviei)</option>
       </select>
@@ -1030,8 +1034,7 @@ async function checarStatus() {
   } else if (data.status === 'gerando_imagens') {
     document.getElementById('status-text').textContent = `Gerando imagens... (${data.concluidos}/${data.total})`;
     const pct = Math.min(85, 20 + (data.concluidos / Math.max(data.total,1)) * 50);
-    document.getElementById('bar-fill').style.width = pct + '%';
-  } else if (data.status === 'gerando_reels') {
+    document.getElementById('bar-fill').style.width = pct + '%';} else if (data.status === 'gerando_reels') {
     document.getElementById('status-text').textContent = `Animando reels... (${data.concluidos_reels || 0}/${data.total})`;
     document.getElementById('bar-fill').style.width = '90%';
   } else if (data.status === 'concluido') {
@@ -1048,6 +1051,11 @@ async function checarStatus() {
     clearInterval(poller);
     localStorage.removeItem('gerador_job_ativo');
     document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-gerar').disabled = false;
+  } else if (data.erro || !resp.ok) {
+    clearInterval(poller);
+    localStorage.removeItem('gerador_job_ativo');
+    document.getElementById('status-text').textContent = 'Esse processamento anterior não foi encontrado (pode ter se perdido num reinício do servidor). Pode iniciar um novo.';
     document.getElementById('btn-gerar').disabled = false;
   }
 }
@@ -1285,8 +1293,7 @@ def eh_video_unico(url: str) -> bool:
 # ---------------------------------------------------------
 EDITOR_BASE_TMP = Path(tempfile.gettempdir()) / "editor_jobs"
 EDITOR_BASE_TMP.mkdir(exist_ok=True)
-EDITOR_JOBS = {}
-MAX_VIDEOS_EDITOR = 15
+EDITOR_JOBS = {}MAX_VIDEOS_EDITOR = 15
 MAX_TAMANHO_VIDEO_MB = 150
 FONTE_PADRAO = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONTE_SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
@@ -1545,8 +1552,7 @@ def _processar_um_video(v: Path, pasta_saida: Path, cta_path: str, brilho: float
         return ("ok", saida, None)
     except Exception as e:
         return ("erro", v.name, str(e))
-    finally:
-        shutil.rmtree(pasta_temp_video, ignore_errors=True)
+    finally:shutil.rmtree(pasta_temp_video, ignore_errors=True)
 
 
 def editor_job_worker(job_id: str, pasta_videos: Path, cta_path: str, brilho: float,
@@ -1805,8 +1811,7 @@ def cortar_grade_em_quatro(img: Image.Image) -> list:
 
 def _quebrar_texto(draw, texto, fonte, largura_max):
     palavras = texto.split()
-    linhas, linha_atual = [], ""
-    for palavra in palavras:
+    linhas, linha_atual = [], ""for palavra in palavras:
         teste = (linha_atual + " " + palavra).strip()
         bbox = draw.textbbox((0, 0), teste, font=fonte)
         if bbox[2] - bbox[0] <= largura_max:
@@ -2047,14 +2052,58 @@ def index():
     return PAGINA_HTML
 
 
+def _gerar_icone(size):
+    """Desenha o ícone do app na hora (nota musical estilo TikTok, ciano/
+    rosa sobre fundo preto) — evita guardar uma string enorme no código,
+    que era a causa mais provável do arquivo cortar ao copiar no celular."""
+    bg = Image.new("RGBA", (size, size), (10, 10, 10, 255))
+    radius = int(size * 0.22)
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, size, size], radius=radius, fill=255)
+
+    cx, cy = size * 0.42, size * 0.5
+    note_h = size * 0.62
+
+    def desenhar_nota(draw_obj, offset_x, offset_y, color):
+        ox, oy = cx + offset_x, cy + offset_y
+        stem_w = size * 0.10
+        draw_obj.rounded_rectangle(
+            [ox, oy - note_h / 2, ox + stem_w, oy + note_h / 2 - size * 0.14],
+            radius=stem_w / 2, fill=color,
+        )head_r = size * 0.14
+        draw_obj.ellipse(
+            [ox - head_r + stem_w / 2, oy + note_h / 2 - head_r * 2,
+             ox + head_r + stem_w / 2, oy + note_h / 2],
+            fill=color,
+        )
+        draw_obj.polygon([
+            (ox + stem_w, oy - note_h / 2),
+            (ox + stem_w + size * 0.16, oy - note_h / 2 + size * 0.10),
+            (ox + stem_w, oy - note_h / 2 + size * 0.16),
+        ], fill=color)
+
+    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(layer)
+    desenhar_nota(ld, size * 0.05, -size * 0.03, (37, 244, 238, 230))
+    desenhar_nota(ld, -size * 0.05, size * 0.03, (255, 45, 85, 230))
+    desenhar_nota(ld, 0, 0, (255, 255, 255, 255))
+
+    bg = Image.alpha_composite(bg, layer)
+    bg.putalpha(mask)
+
+    buf = io.BytesIO()
+    bg.convert("RGBA").save(buf, format="PNG")
+    return buf.getvalue()
+
+
 @app.route("/icon-192.png")
 def icon_192():
-    return Response(base64.b64decode(ICON_192_B64), mimetype="image/png")
+    return Response(_gerar_icone(192), mimetype="image/png")
 
 
 @app.route("/icon-512.png")
 def icon_512():
-    return Response(base64.b64decode(ICON_512_B64), mimetype="image/png")
+    return Response(_gerar_icone(512), mimetype="image/png")
 
 
 @app.route("/manifest.json")
@@ -2279,9 +2328,7 @@ def gerador_iniciar():
     t = threading.Thread(
         target=gerador_job_worker,
         args=(job_id, api_key, funil, exemplos, estilo, quantidade, gerar_reels, estilo_customizado),
-        daemon=True,
-    )
-    t.start()
+        daemon=True,t.start()
 
     return jsonify({"job_id": job_id})
 
@@ -2545,3 +2592,4 @@ def limpar_jobs_antigos():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+    
