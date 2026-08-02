@@ -18,4 +18,5 @@ COPY . .
 ENV PORT=5000
 EXPOSE 5000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "300", "--workers", "1", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "300", "--workers", "1", \
+     "--access-logfile", "-", "--error-logfile", "-", "app:app"]
