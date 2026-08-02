@@ -68,6 +68,17 @@ PAGINA_HTML = """
     color: #000; font-weight: 700; font-size: 16px; cursor: pointer;
   }
   button:disabled { opacity: 0.5; }
+  button.secundario {
+    width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #333;
+    background: #1a1a1a; color: #ccc; font-weight: 600; font-size: 13px; cursor: pointer;
+  }
+  .job-recente {
+    background: #1a1a1a; border: 1px solid #262626; border-radius: 10px;
+    padding: 12px; margin-bottom: 8px; font-size: 13px;
+  }
+  .job-recente a {
+    display: inline-block; margin-top: 6px; color: #25f4ee; font-weight: 700; text-decoration: none;
+  }
   #status-box { margin-top: 20px; padding: 16px; border-radius: 10px; background: #1a1a1a; display: none; }
   #status-text { font-size: 14px; margin-bottom: 8px; }
   .bar-bg { background: #333; border-radius: 6px; height: 8px; overflow: hidden; }
@@ -117,6 +128,11 @@ PAGINA_HTML = """
 
     <button id="btn-iniciar" onclick="iniciar()">Baixar</button>
 
+    <button type="button" class="secundario" style="margin-top:10px;" onclick="verRecentes()">
+      🕓 Ver processamentos recentes (última hora)
+    </button>
+    <div id="lista-recentes" style="display:none; margin-top:12px;"></div>
+
     <div id="status-box">
       <div id="status-text">Preparando...</div>
       <div class="bar-bg"><div id="bar-fill" class="bar-fill"></div></div>
@@ -162,6 +178,7 @@ async function iniciar() {
   }
 
   jobId = data.job_id;
+  localStorage.setItem('baixador_job_ativo', jobId);
   poller = setInterval(checarStatus, 2000);
 }
 
@@ -177,7 +194,9 @@ async function checarStatus() {
     document.getElementById('status-text').textContent = 'Preparando...';
   } else if (data.status === 'concluido') {
     clearInterval(poller);
-    document.getElementById('status-text').textContent = `Pronto! ${data.total_videos} vídeos baixados.`;
+    localStorage.removeItem('baixador_job_ativo');
+    const totalTexto = data.total_videos != null ? `${data.total_videos} vídeos baixados` : 'vídeos prontos';
+    document.getElementById('status-text').textContent = `Pronto! ${totalTexto}.`;
     document.getElementById('bar-fill').style.width = '100%';
     const link = document.getElementById('download-link');
     link.href = '/api/baixar/' + jobId;
@@ -185,10 +204,56 @@ async function checarStatus() {
     document.getElementById('btn-iniciar').disabled = false;
   } else if (data.status === 'erro') {
     clearInterval(poller);
+    localStorage.removeItem('baixador_job_ativo');
     document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
     document.getElementById('btn-iniciar').disabled = false;
   }
 }
+
+async function verRecentes() {
+  const div = document.getElementById('lista-recentes');
+  div.style.display = 'block';
+  div.innerHTML = '<p class="ajuda">Buscando...</p>';
+
+  const resp = await fetch('/api/recentes');
+  const data = await resp.json();
+
+  if (!data.jobs || data.jobs.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhum processamento na última hora.</p>';
+    return;
+  }
+
+  div.innerHTML = '';
+  data.jobs.forEach(j => {
+    const item = document.createElement('div');
+    item.className = 'job-recente';
+    let statusTexto = '';
+    if (j.status === 'concluido' && j.recuperado_do_disco) statusTexto = '✅ Pronto (recuperado do disco)';
+    else if (j.status === 'concluido') statusTexto = `✅ Pronto — ${j.total ?? '?'} vídeo(s)`;
+    else if (j.status === 'erro') statusTexto = '❌ Erro';
+    else statusTexto = '⏳ Processando';
+
+    item.innerHTML = `
+      <div>${statusTexto} — há ${j.minutos_atras} min</div>
+      <div style="color:#666; font-size:11px;">ID: ${j.job_id}</div>
+      ${j.status === 'concluido' ? `<a href="/api/baixar/${j.job_id}">⬇ Baixar ZIP</a>` : ''}
+    `;
+    div.appendChild(item);
+  });
+}
+
+// Retoma automaticamente um processamento que ficou rodando em segundo
+// plano no servidor (ex: você desligou o celular ou saiu do app).
+(function retomarJobAtivo() {
+  const jobSalvo = localStorage.getItem('baixador_job_ativo');
+  if (!jobSalvo) return;
+  jobId = jobSalvo;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('status-text').textContent = 'Retomando processamento anterior...';
+  document.getElementById('btn-iniciar').disabled = true;
+  poller = setInterval(checarStatus, 2000);
+  checarStatus();
+})();
 </script>
 </body>
 </html>
@@ -525,7 +590,8 @@ async function verRecentes() {
     const item = document.createElement('div');
     item.className = 'job-recente';
     let statusTexto = '';
-    if (j.status === 'concluido') statusTexto = `✅ Pronto — ${j.total} vídeo(s)`;
+    if (j.status === 'concluido' && j.recuperado_do_disco) statusTexto = '✅ Pronto (recuperado do disco)';
+    else if (j.status === 'concluido') statusTexto = `✅ Pronto — ${j.total} vídeo(s)`;
     else if (j.status === 'erro') statusTexto = '❌ Erro';
     else statusTexto = `⏳ Processando (${j.concluidos}/${j.total})`;
 
@@ -600,6 +666,13 @@ PAGINA_GERADOR_HTML = """
   }
   .exemplo-texto { flex: 1; font-size: 13px; color: #ccc; white-space: pre-wrap; }
   .exemplo-del { color: #ff2d55; background: none; border: none; font-size: 13px; width: auto; padding: 4px 8px; }
+  .job-recente {
+    background: #1a1a1a; border: 1px solid #262626; border-radius: 10px;
+    padding: 12px; margin-bottom: 8px; font-size: 13px;
+  }
+  .job-recente a {
+    display: inline-block; margin-top: 6px; color: #25f4ee; font-weight: 700; text-decoration: none;
+  }
   #status-box { margin-top: 20px; padding: 16px; border-radius: 10px; background: #1a1a1a; display: none; }
   #status-text { font-size: 14px; margin-bottom: 8px; }
   .bar-bg { background: #333; border-radius: 6px; height: 8px; overflow: hidden; }
@@ -699,6 +772,11 @@ PAGINA_GERADOR_HTML = """
 
     <button id="btn-gerar" onclick="gerar()">Gerar</button>
 
+    <button type="button" class="secundario" style="margin-top:10px;" onclick="verRecentes()">
+      🕓 Ver processamentos recentes (última hora)
+    </button>
+    <div id="lista-recentes" style="display:none; margin-top:12px;"></div>
+
     <div id="status-box">
       <div id="status-text">Preparando...</div>
       <div class="bar-bg"><div id="bar-fill" class="bar-fill"></div></div>
@@ -738,13 +816,19 @@ function atualizarStatusChave() {
 
 async function analisarEstilo() {
   const apiKey = localStorage.getItem('api_key_openai') || '';
-  const imagens = document.getElementById('imagens-referencia').files;
+  const todasImagens = Array.from(document.getElementById('imagens-referencia').files);
 
   if (!apiKey) { alert('Configura sua chave OpenAI na aba Config primeiro'); return; }
-  if (imagens.length === 0) { alert('Escolhe pelo menos 1 imagem de referência'); return; }
+  if (todasImagens.length === 0) { alert('Escolhe pelo menos 1 imagem de referência'); return; }
+
+  const LIMITE = 10;
+  const imagens = todasImagens.slice(0, LIMITE);
+  const cortou = todasImagens.length > LIMITE;
 
   document.getElementById('btn-analisar-estilo').disabled = true;
-  document.getElementById('status-estilo').textContent = 'Analisando estilo (pode levar 20-30s)...';
+  document.getElementById('status-estilo').textContent = cortou
+    ? `Você escolheu ${todasImagens.length}, mas só as 10 primeiras são enviadas. Analisando...`
+    : 'Analisando estilo (pode levar 20-30s)...';
 
   const formData = new FormData();
   for (const img of imagens) formData.append('imagens', img);
@@ -762,7 +846,8 @@ async function analisarEstilo() {
       atualizarStatusEstiloPersonalizado();
     }
   } catch (e) {
-    document.getElementById('status-estilo').textContent = 'Erro de conexão. Tenta de novo.';
+    document.getElementById('status-estilo').textContent =
+      'Erro de conexão (rede instável ou upload muito pesado). Tenta com menos imagens ou numa conexão melhor.';
   }
   document.getElementById('btn-analisar-estilo').disabled = false;
 }
@@ -797,12 +882,18 @@ function adicionarExemplo() {
 }
 
 async function transcreverCopies() {
-  const imagens = document.getElementById('imagens-copy').files;
+  const todasImagens = Array.from(document.getElementById('imagens-copy').files);
 
-  if (imagens.length === 0) { alert('Escolhe pelo menos 1 print'); return; }
+  if (todasImagens.length === 0) { alert('Escolhe pelo menos 1 print'); return; }
+
+  const LIMITE = 10;
+  const imagens = todasImagens.slice(0, LIMITE);
+  const cortou = todasImagens.length > LIMITE;
 
   document.getElementById('btn-transcrever-copies').disabled = true;
-  document.getElementById('status-transcricao').textContent = 'Lendo os prints (OCR local, sem custo)...';
+  document.getElementById('status-transcricao').textContent = cortou
+    ? `Você escolheu ${todasImagens.length}, mas só os 10 primeiros são enviados. Lendo (OCR local, sem custo)...`
+    : 'Lendo os prints (OCR local, sem custo)...';
 
   const formData = new FormData();
   for (const img of imagens) formData.append('imagens', img);
@@ -821,7 +912,8 @@ async function transcreverCopies() {
       document.getElementById('imagens-copy').value = '';
     }
   } catch (e) {
-    document.getElementById('status-transcricao').textContent = 'Erro de conexão. Tenta de novo.';
+    document.getElementById('status-transcricao').textContent =
+      'Erro de conexão (rede instável ou upload muito pesado). Tenta com menos imagens ou numa conexão melhor.';
   }
   document.getElementById('btn-transcrever-copies').disabled = false;
 }
@@ -898,6 +990,7 @@ async function gerar() {
   }
 
   jobId = data.job_id;
+  localStorage.setItem('gerador_job_ativo', jobId);
   poller = setInterval(checarStatus, 3000);
 }
 
@@ -917,7 +1010,9 @@ async function checarStatus() {
     document.getElementById('bar-fill').style.width = '90%';
   } else if (data.status === 'concluido') {
     clearInterval(poller);
-    document.getElementById('status-text').textContent = `Pronto! ${data.total} imagem(ns) geradas.`;
+    localStorage.removeItem('gerador_job_ativo');
+    const totalTexto = data.total != null ? `${data.total} imagem(ns) geradas` : 'imagens prontas';
+    document.getElementById('status-text').textContent = `Pronto! ${totalTexto}.`;
     document.getElementById('bar-fill').style.width = '100%';
     const link = document.getElementById('download-link');
     link.href = '/api/gerador/baixar/' + jobId;
@@ -925,10 +1020,56 @@ async function checarStatus() {
     document.getElementById('btn-gerar').disabled = false;
   } else if (data.status === 'erro') {
     clearInterval(poller);
+    localStorage.removeItem('gerador_job_ativo');
     document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
     document.getElementById('btn-gerar').disabled = false;
   }
 }
+
+async function verRecentes() {
+  const div = document.getElementById('lista-recentes');
+  div.style.display = 'block';
+  div.innerHTML = '<p class="ajuda">Buscando...</p>';
+
+  const resp = await fetch('/api/gerador/recentes');
+  const data = await resp.json();
+
+  if (!data.jobs || data.jobs.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhum processamento na última hora.</p>';
+    return;
+  }
+
+  div.innerHTML = '';
+  data.jobs.forEach(j => {
+    const item = document.createElement('div');
+    item.className = 'job-recente';
+    let statusTexto = '';
+    if (j.status === 'concluido' && j.recuperado_do_disco) statusTexto = '✅ Pronto (recuperado do disco)';
+    else if (j.status === 'concluido') statusTexto = `✅ Pronto — ${j.total ?? '?'} imagem(ns)`;
+    else if (j.status === 'erro') statusTexto = '❌ Erro';
+    else statusTexto = '⏳ Processando';
+
+    item.innerHTML = `
+      <div>${statusTexto} — há ${j.minutos_atras} min</div>
+      <div style="color:#666; font-size:11px;">ID: ${j.job_id}</div>
+      ${j.status === 'concluido' ? `<a href="/api/gerador/baixar/${j.job_id}">⬇ Baixar ZIP</a>` : ''}
+    `;
+    div.appendChild(item);
+  });
+}
+
+// Retoma automaticamente um processamento que ficou rodando em segundo
+// plano no servidor (ex: você desligou o celular ou saiu do app).
+(function retomarJobAtivo() {
+  const jobSalvo = localStorage.getItem('gerador_job_ativo');
+  if (!jobSalvo) return;
+  jobId = jobSalvo;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('status-text').textContent = 'Retomando processamento anterior...';
+  document.getElementById('btn-gerar').disabled = true;
+  poller = setInterval(checarStatus, 3000);
+  checarStatus();
+})();
 
 carregarConfig();
 </script>
@@ -2003,31 +2144,64 @@ def editor_status(job_id):
 
 @app.route("/api/editor/baixar/<job_id>")
 def editor_baixar(job_id):
+    # job_id vem da URL — valida o formato antes de usar em caminho de arquivo
+    if not re.fullmatch(r"[a-f0-9]{8,32}", job_id):
+        return jsonify({"erro": "id inválido"}), 400
+
     job = EDITOR_JOBS.get(job_id)
-    if not job or job["status"] != "concluido":
-        return jsonify({"erro": "arquivo ainda não está pronto"}), 400
-    return send_file(job["zip_path"], as_attachment=True, download_name=f"editados_{job_id}.zip")
+    if job and job["status"] == "concluido":
+        return send_file(job["zip_path"], as_attachment=True, download_name=f"editados_{job_id}.zip")
+
+    # Não está mais na memória (ex: processo reiniciou) — tenta achar o
+    # zip direto no disco, que sobrevive a reinícios.
+    zip_path = EDITOR_BASE_TMP / f"{job_id}.zip"
+    if zip_path.exists():
+        return send_file(str(zip_path), as_attachment=True, download_name=f"editados_{job_id}.zip")
+
+    return jsonify({"erro": "arquivo ainda não está pronto ou não encontrado"}), 400
 
 
 @app.route("/api/editor/recentes")
 def editor_recentes():
     """Lista os processamentos das últimas horas — serve pra recuperar um
-    job cuja tela foi perdida (ex: saiu do app no meio do processamento)."""
+    job cuja tela (ou até a memória do servidor) foi perdida. Combina o que
+    está em memória com uma varredura direta dos arquivos .zip no disco,
+    porque o disco sobrevive a reinícios do processo, a memória não."""
     agora = time.time()
-    recentes = []
+    recentes = {}
+
     for jid, job in EDITOR_JOBS.items():
         idade = agora - job.get("criado_em", agora)
         if idade > 3600:
             continue
-        recentes.append({
+        recentes[jid] = {
             "job_id": jid,
             "status": job["status"],
             "concluidos": job.get("concluidos", 0),
             "total": job.get("total", 0),
             "minutos_atras": round(idade / 60, 1),
-        })
-    recentes.sort(key=lambda x: x["minutos_atras"])
-    return jsonify({"jobs": recentes})
+        }
+
+    # Varre o disco por .zip que a memória não conhece mais (ex: processo
+    # reiniciou depois que o job terminou, mas antes de você conferir).
+    for zip_path in EDITOR_BASE_TMP.glob("*.zip"):
+        jid = zip_path.stem
+        if jid in recentes:
+            continue
+        idade = agora - zip_path.stat().st_mtime
+        if idade > 3600:
+            continue
+        recentes[jid] = {
+            "job_id": jid,
+            "status": "concluido",
+            "concluidos": None,
+            "total": None,
+            "minutos_atras": round(idade / 60, 1),
+            "recuperado_do_disco": True,
+        }
+
+    lista = sorted(recentes.values(), key=lambda x: x["minutos_atras"])
+    return jsonify({"jobs": lista})
 
 
 @app.route("/gerador")
@@ -2050,203 +2224,4 @@ def gerador_iniciar():
     estilo_customizado = data.get("estilo_customizado", "").strip()
     gerar_reels = bool(data.get("gerar_reels", False))
 
-    if not api_key:
-        return jsonify({"erro": "Informe sua chave da API OpenAI"}), 400
-    if not funil:
-        return jsonify({"erro": "Descreva o funil/nicho atual"}), 400
-
-    estilos_validos = set(PROMPTS_ESTILO.keys()) | {"personalizado"}
-    if estilo not in estilos_validos:
-        estilo = "foto_livro"
-    if estilo == "personalizado" and not estilo_customizado:
-        return jsonify({"erro": "Analisa um estilo personalizado primeiro (ou escolhe outro estilo)"}), 400
-
-    try:
-        quantidade = int(data.get("quantidade", 8))
-    except (TypeError, ValueError):
-        quantidade = 8
-    quantidade = max(4, min(quantidade, MAX_IMAGENS_GERADOR))
-    quantidade = (quantidade + 3) // 4 * 4  # arredonda pra múltiplo de 4
-
-    job_id = uuid.uuid4().hex[:12]
-    GERADOR_JOBS[job_id] = {
-        "status": "gerando_copies",
-        "concluidos": 0,
-        "total": quantidade,
-        "criado_em": time.time(),
-    }
-
-    t = threading.Thread(
-        target=gerador_job_worker,
-        args=(job_id, api_key, funil, exemplos, estilo, quantidade, gerar_reels, estilo_customizado),
-        daemon=True,
-    )
-    t.start()
-
-    return jsonify({"job_id": job_id})
-
-
-@app.route("/api/gerador/analisar-estilo", methods=["POST"])
-def gerador_analisar_estilo():
-    api_key = request.form.get("api_key", "").strip()
-    imagens_files = request.files.getlist("imagens")
-
-    if not api_key:
-        return jsonify({"erro": "Configura sua chave OpenAI na aba Config primeiro"}), 400
-    if not imagens_files:
-        return jsonify({"erro": "Envie pelo menos 1 imagem de referência"}), 400
-
-    try:
-        imagens_bytes = [f.read() for f in imagens_files[:MAX_IMAGENS_ANALISE_ESTILO]]
-        descricao = analisar_estilo_visual(api_key, imagens_bytes)
-        return jsonify({"descricao_estilo": descricao, "imagens_analisadas": len(imagens_bytes)})
-    except requests.exceptions.HTTPError as e:
-        detalhe = ""
-        try:
-            detalhe = e.response.json().get("error", {}).get("message", "")
-        except Exception:
-            pass
-        return jsonify({"erro": f"Erro na API da OpenAI: {detalhe or str(e)}"}), 400
-    except Exception as e:
-        return jsonify({"erro": str(e)}), 500
-
-
-@app.route("/api/gerador/transcrever-copies", methods=["POST"])
-def gerador_transcrever_copies():
-    imagens_files = request.files.getlist("imagens")
-
-    if not imagens_files:
-        return jsonify({"erro": "Envie pelo menos 1 print"}), 400
-
-    try:
-        imagens_bytes = [f.read() for f in imagens_files[:MAX_IMAGENS_TRANSCRICAO_COPY]]
-        textos = transcrever_copies_de_imagens(imagens_bytes)
-        if not textos:
-            return jsonify({"erro": "Não consegui ler texto legível nos prints enviados"}), 400
-        return jsonify({"textos": textos})
-    except Exception as e:
-        return jsonify({"erro": str(e)}), 500
-
-
-@app.route("/api/gerador/status/<job_id>")
-def gerador_status(job_id):
-    job = GERADOR_JOBS.get(job_id)
-    if not job:
-        return jsonify({"erro": "job não encontrado"}), 404
-    resposta = {
-        "status": job["status"],
-        "concluidos": job.get("concluidos", 0),
-        "concluidos_reels": job.get("concluidos_reels", 0),
-        "total": job.get("total", 0),
-    }
-    if job["status"] == "erro":
-        resposta["erro"] = job.get("erro")
-    return jsonify(resposta)
-
-
-@app.route("/api/gerador/baixar/<job_id>")
-def gerador_baixar(job_id):
-    job = GERADOR_JOBS.get(job_id)
-    if not job or job["status"] != "concluido":
-        return jsonify({"erro": "arquivo ainda não está pronto"}), 400
-    return send_file(job["zip_path"], as_attachment=True, download_name=f"gerado_{job_id}.zip")
-
-
-@app.route("/api/iniciar", methods=["POST"])
-def iniciar():
-    data = request.get_json(force=True)
-    conta = data.get("conta", "").strip()
-
-    if not conta:
-        return jsonify({"erro": "Informe o link do vídeo, o @ ou o link da conta"}), 400
-
-    try:
-        inicio = int(data.get("de", 1))
-    except (TypeError, ValueError):
-        inicio = 1
-    try:
-        fim = int(data.get("ate", 10))
-    except (TypeError, ValueError):
-        fim = 10
-
-    inicio = max(1, min(inicio, LIMITE_MAXIMO))
-    fim = max(inicio, min(fim, LIMITE_MAXIMO))
-
-    url_alvo = normalizar_url(conta)
-    job_id = uuid.uuid4().hex[:12]
-
-    JOBS[job_id] = {
-        "status": "na_fila",
-        "concluidos": 0,
-        "arquivo_atual": "",
-        "criado_em": time.time(),
-        "video_unico": eh_video_unico(url_alvo),
-    }
-
-    t = threading.Thread(target=job_worker, args=(job_id, url_alvo, inicio, fim), daemon=True)
-    t.start()
-
-    return jsonify({"job_id": job_id, "video_unico": JOBS[job_id]["video_unico"]})
-
-
-@app.route("/api/status/<job_id>")
-def status(job_id):
-    job = JOBS.get(job_id)
-    if not job:
-        return jsonify({"erro": "job não encontrado"}), 404
-    resposta = {
-        "status": job["status"],
-        "concluidos": job.get("concluidos", 0),
-        "arquivo_atual": job.get("arquivo_atual", ""),
-    }
-    if job["status"] == "erro":
-        resposta["erro"] = job.get("erro")
-    if job["status"] == "concluido":
-        resposta["total_videos"] = job.get("total_videos")
-    return jsonify(resposta)
-
-
-@app.route("/api/baixar/<job_id>")
-def baixar(job_id):
-    job = JOBS.get(job_id)
-    if not job or job["status"] != "concluido":
-        return jsonify({"erro": "arquivo ainda não está pronto"}), 400
-    return send_file(job["zip_path"], as_attachment=True, download_name=f"tiktok_{job_id}.zip")
-
-
-# Limpeza básica de jobs antigos (roda a cada request, suficiente pra uso pessoal)
-@app.before_request
-def limpar_jobs_antigos():
-    agora = time.time()
-
-    expirados = [jid for jid, j in JOBS.items() if agora - j.get("criado_em", agora) > 3600]
-    for jid in expirados:
-        zip_path = BASE_TMP / f"{jid}.zip"
-        if zip_path.exists():
-            zip_path.unlink()
-        JOBS.pop(jid, None)
-
-    expirados_editor = [jid for jid, j in EDITOR_JOBS.items() if agora - j.get("criado_em", agora) > 3600]
-    for jid in expirados_editor:
-        zip_path = EDITOR_BASE_TMP / f"{jid}.zip"
-        if zip_path.exists():
-            zip_path.unlink()
-        pasta = EDITOR_BASE_TMP / jid
-        if pasta.exists():
-            shutil.rmtree(pasta, ignore_errors=True)
-        EDITOR_JOBS.pop(jid, None)
-
-    expirados_gerador = [jid for jid, j in GERADOR_JOBS.items() if agora - j.get("criado_em", agora) > 3600]
-    for jid in expirados_gerador:
-        zip_path = GERADOR_BASE_TMP / f"{jid}.zip"
-        if zip_path.exists():
-            zip_path.unlink()
-        pasta = GERADOR_BASE_TMP / jid
-        if pasta.exists():
-            shutil.rmtree(pasta, ignore_errors=True)
-        GERADOR_JOBS.pop(jid, None)
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    i
