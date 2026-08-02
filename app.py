@@ -164,12 +164,19 @@ async function iniciar() {
   document.getElementById('status-text').textContent = 'Iniciando...';
   document.getElementById('bar-fill').style.width = '5%';
 
-  const resp = await fetch('/api/iniciar', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ conta, de, ate })
-  });
-  const data = await resp.json();
+  let resp, data;
+  try {
+    resp = await fetch('/api/iniciar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conta, de, ate })
+    });
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Erro de conexão ao iniciar. Verifica a internet e tenta de novo.';
+    document.getElementById('btn-iniciar').disabled = false;
+    return;
+  }
 
   if (data.erro) {
     document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
@@ -183,8 +190,14 @@ async function iniciar() {
 }
 
 async function checarStatus() {
-  const resp = await fetch('/api/status/' + jobId);
-  const data = await resp.json();
+  let resp, data;
+  try {
+    resp = await fetch('/api/status/' + jobId);
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Conexão instável... tentando de novo (o processamento continua no servidor).';
+    return; // não limpa o poller — tenta de novo na próxima rodada
+  }
 
   if (data.status === 'baixando') {
     document.getElementById('status-text').textContent = `Baixando... (${data.concluidos} vídeos concluídos)`;
@@ -532,8 +545,14 @@ async function processar() {
 }
 
 async function checarStatus() {
-  const resp = await fetch('/api/editor/status/' + jobId);
-  const data = await resp.json();
+  let resp, data;
+  try {
+    resp = await fetch('/api/editor/status/' + jobId);
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Conexão instável... tentando de novo (o processamento continua no servidor).';
+    return;
+  }
 
   if (data.status === 'processando') {
     const extra = data.arquivo_atual && data.arquivo_atual.startsWith('transcrevendo') ? ' — transcrevendo áudio...' : '';
@@ -995,8 +1014,14 @@ async function gerar() {
 }
 
 async function checarStatus() {
-  const resp = await fetch('/api/gerador/status/' + jobId);
-  const data = await resp.json();
+  let resp, data;
+  try {
+    resp = await fetch('/api/gerador/status/' + jobId);
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Conexão instável... tentando de novo (o processamento continua no servidor).';
+    return;
+  }
 
   if (data.status === 'gerando_copies') {
     document.getElementById('status-text').textContent = 'Criando as frases com IA...';
@@ -2193,35 +2218,4 @@ def editor_recentes():
             continue
         recentes[jid] = {
             "job_id": jid,
-            "status": "concluido",
-            "concluidos": None,
-            "total": None,
-            "minutos_atras": round(idade / 60, 1),
-            "recuperado_do_disco": True,
-        }
-
-    lista = sorted(recentes.values(), key=lambda x: x["minutos_atras"])
-    return jsonify({"jobs": lista})
-
-
-@app.route("/gerador")
-def gerador_page():
-    return PAGINA_GERADOR_HTML
-
-
-@app.route("/config")
-def config_page():
-    return PAGINA_CONFIG_HTML
-
-
-@app.route("/api/gerador/iniciar", methods=["POST"])
-def gerador_iniciar():
-    data = request.get_json(force=True)
-    api_key = data.get("api_key", "").strip()
-    funil = data.get("funil", "").strip()
-    exemplos = data.get("exemplos", [])
-    estilo = data.get("estilo", "foto_livro")
-    estilo_customizado = data.get("estilo_customizado", "").strip()
-    gerar_reels = bool(data.get("gerar_reels", False))
-
-    i
+            "s
