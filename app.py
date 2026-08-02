@@ -1293,7 +1293,8 @@ def eh_video_unico(url: str) -> bool:
 # ---------------------------------------------------------
 EDITOR_BASE_TMP = Path(tempfile.gettempdir()) / "editor_jobs"
 EDITOR_BASE_TMP.mkdir(exist_ok=True)
-EDITOR_JOBS = {}MAX_VIDEOS_EDITOR = 15
+EDITOR_JOBS = {}
+MAX_VIDEOS_EDITOR = 15
 MAX_TAMANHO_VIDEO_MB = 150
 FONTE_PADRAO = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONTE_SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
