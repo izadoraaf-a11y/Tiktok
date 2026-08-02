@@ -257,7 +257,8 @@ async function verRecentes() {
 
 // Retoma automaticamente um processamento que ficou rodando em segundo
 // plano no servidor (ex: você desligou o celular ou saiu do app).
-(function retomarJobAtivo() {const jobSalvo = localStorage.getItem('baixador_job_ativo');
+(function retomarJobAtivo() {
+  const jobSalvo = localStorage.getItem('baixador_job_ativo');
   if (!jobSalvo) return;
   jobId = jobSalvo;
   document.getElementById('status-box').style.display = 'block';
@@ -516,7 +517,8 @@ async function processar() {
   formData.append('cor_fundo_citacao', corFundoCitacao);
   formData.append('api_key', apiKey);
 
-  document.getElementById('btn-processar').disabled = true;document.getElementById('status-box').style.display = 'block';
+  document.getElementById('btn-processar').disabled = true;
+  document.getElementById('status-box').style.display = 'block';
   document.getElementById('download-link').style.display = 'none';
   document.getElementById('status-text').textContent = 'Enviando arquivos...';
   document.getElementById('bar-fill').style.width = '5%';
@@ -775,7 +777,8 @@ PAGINA_GERADOR_HTML = """
 
     <div class="campo">
       <label>Estilo visual</label>
-      <select id="estilo"><option value="foto_livro">Foto realista — mão segurando livro/celular</option>
+      <select id="estilo">
+        <option value="foto_livro">Foto realista — mão segurando livro/celular</option>
         <option value="ilustrado_cosmico">Ilustrado — cósmico/místico</option>
         <option value="personalizado">Meu estilo (dos exemplos que enviei)</option>
       </select>
@@ -1034,7 +1037,8 @@ async function checarStatus() {
   } else if (data.status === 'gerando_imagens') {
     document.getElementById('status-text').textContent = `Gerando imagens... (${data.concluidos}/${data.total})`;
     const pct = Math.min(85, 20 + (data.concluidos / Math.max(data.total,1)) * 50);
-    document.getElementById('bar-fill').style.width = pct + '%';} else if (data.status === 'gerando_reels') {
+    document.getElementById('bar-fill').style.width = pct + '%';
+  } else if (data.status === 'gerando_reels') {
     document.getElementById('status-text').textContent = `Animando reels... (${data.concluidos_reels || 0}/${data.total})`;
     document.getElementById('bar-fill').style.width = '90%';
   } else if (data.status === 'concluido') {
@@ -1299,8 +1303,6 @@ MAX_TAMANHO_VIDEO_MB = 150
 FONTE_PADRAO = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONTE_SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
 
-# Modelos visuais de legenda: cada um define posição, cor e fundo.
-# {w}/{h}/{th} são substituídos pelos valores reais do vídeo em tempo de execução.
 MODELOS_LEGENDA = {
     "classico": "fontcolor=white:fontsize=h/22:box=1:boxcolor=black@0.55:boxborderw=10:x=(w-text_w)/2:y=h-th-40",
     "impacto": "fontcolor=yellow:fontsize=h/18:box=1:boxcolor=black@0.7:boxborderw=14:x=(w-text_w)/2:y=50",
@@ -1308,27 +1310,20 @@ MODELOS_LEGENDA = {
     "minimalista": "fontcolor=white@0.9:fontsize=h/28:box=1:boxcolor=black@0.35:boxborderw=6:x=30:y=h-th-30",
 }
 
-# Modelo "citação": faixa colorida full-width com texto serifado centralizado.
-# Diferente dos outros, precisa de um filtro extra (drawbox) antes do drawtext,
-# por isso é tratado separado dos demais no processar_video_com_cta.
-# IMPORTANTE: drawbox usa as variáveis ih/iw (altura/largura de entrada),
-# já o drawtext usa h/w — são filtros diferentes com convenções diferentes.
-FAIXA_Y_INICIO_BOX = "ih*0.42"     # usado no drawbox
-FAIXA_ALTURA_BOX = "ih*0.18"       # usado no drawbox
-FAIXA_Y_INICIO_TXT = "h*0.42"      # usado no drawtext
-FAIXA_ALTURA_TXT = "h*0.18"        # usado no drawtext
+FAIXA_Y_INICIO_BOX = "ih*0.42"
+FAIXA_ALTURA_BOX = "ih*0.18"
+FAIXA_Y_INICIO_TXT = "h*0.42"
+FAIXA_ALTURA_TXT = "h*0.18"
 CORES_FAIXA_CITACAO = {
     "branco": ("white@1", "black"),
     "preto": ("black@1", "white"),
     "vermelho": ("0xD62828@1", "white"),
 }
 
-
-LIMITE_DIMENSAO_VIDEO = 1920  # baixa a resolução se passar disso, pra processar mais rápido
+LIMITE_DIMENSAO_VIDEO = 1920
 
 
 def probe_video(path: str):
-    """Retorna (largura, altura, fps, tem_audio) de um vídeo via ffprobe."""
     cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0",
            "-show_entries", "stream=width,height,r_frame_rate",
            "-of", "json", path]
@@ -1343,20 +1338,16 @@ def probe_video(path: str):
     out_audio = subprocess.run(cmd_audio, capture_output=True, text=True, timeout=30)
     tem_audio = bool(out_audio.stdout.strip())
 
-    # Reduz vídeos muito grandes (ex: 4K de celular) — acelera bastante o
-    # processamento, já que menos pixels = menos trabalho em todo o pipeline.
     maior_lado = max(w, h)
     if maior_lado > LIMITE_DIMENSAO_VIDEO:
         fator = LIMITE_DIMENSAO_VIDEO / maior_lado
-        w = int(w * fator) // 2 * 2   # precisa ser par pro codec h264
+        w = int(w * fator) // 2 * 2
         h = int(h * fator) // 2 * 2
 
     return w, h, fps, tem_audio
 
 
 def extrair_audio_para_transcricao(input_path: str, saida_path: str):
-    """Extrai só o áudio (comprimido, mono) pra mandar pra API — bem menor
-    que o vídeo inteiro, o que acelera o upload e evita o limite de 25MB."""
     cmd = ["ffmpeg", "-y", "-i", input_path, "-vn", "-ac", "1", "-ar", "16000",
            "-b:a", "64k", saida_path]
     subprocess.run(cmd, capture_output=True, timeout=60, check=True)
@@ -1364,9 +1355,6 @@ def extrair_audio_para_transcricao(input_path: str, saida_path: str):
 
 def transcrever_segmentos(api_key: str, input_path: str, pasta_trabalho: Path,
                            max_duracao_segmento: float = 4.0) -> list:
-    """Transcreve o áudio do vídeo via Whisper (OpenAI) e devolve uma lista
-    de segmentos [{start, end, text}], já quebrados em pedaços curtos (estilo
-    legenda de Reels/TikTok) mesmo quando a fala original vem em frases longas."""
     audio_path = pasta_trabalho / "audio_transcricao.mp3"
     extrair_audio_para_transcricao(input_path, str(audio_path))
 
@@ -1390,8 +1378,6 @@ def transcrever_segmentos(api_key: str, input_path: str, pasta_trabalho: Path,
         duracao_seg = fim - inicio
 
         if duracao_seg > max_duracao_segmento:
-            # Quebra frases longas em pedaços menores, dividindo o tempo
-            # proporcionalmente pelo número de palavras de cada pedaço.
             palavras = texto.split()
             n_partes = max(2, int(duracao_seg // max_duracao_segmento) + 1)
             tam_parte = max(1, len(palavras) // n_partes)
@@ -1415,9 +1401,6 @@ def transcrever_segmentos(api_key: str, input_path: str, pasta_trabalho: Path,
 def _filtro_segmento_texto(idx: int, label_entrada: str, label_saida: str, txt_path: Path,
                             modelo: str, cor_fundo_citacao: str,
                             inicio: float = None, fim: float = None) -> str:
-    """Monta o pedaço do filtro ffmpeg pra desenhar UM trecho de texto,
-    opcionalmente só visível entre 'inicio' e 'fim' segundos (pra legenda
-    automática sincronizada com a fala)."""
     enable_clause = f":enable='between(t,{inicio:.2f},{fim:.2f})'" if inicio is not None else ""
 
     if modelo == "citacao":
@@ -1438,8 +1421,6 @@ def _filtro_segmento_texto(idx: int, label_entrada: str, label_saida: str, txt_p
 
 def construir_filtro_legenda(pasta_trabalho: Path, legenda_modelo: str, cor_fundo_citacao: str,
                               label_inicial: str, texto_manual: str = "", segmentos: list = None):
-    """Monta a cadeia de filtros de legenda: um drawtext por segmento (modo
-    automático, sincronizado no tempo) ou um único drawtext fixo (modo manual)."""
     partes = []
     label_atual = label_inicial
 
@@ -1471,12 +1452,8 @@ def processar_video_com_cta(input_path: str, cta_path: str, brilho: float,
                              cor_fundo_citacao: str = "branco",
                              legenda_segmentos: list = None,
                              pasta_trabalho: Path = None):
-    """Aplica filtro de brilho, legenda opcional (manual ou por segmentos
-    sincronizados), e cola a imagem de CTA no final."""
     w, h, fps, tem_audio = probe_video(input_path)
 
-    # Se o vídeo original é maior que o limite, redimensiona antes de tudo —
-    # isso é o que mais acelera o processamento (menos pixels em cada filtro).
     filtro_video = f"[0:v]scale={w}:{h}[v0scaled];[v0scaled]eq=brightness={brilho}[v0eq]"
     label_apos_brilho = "v0eq"
 
@@ -1496,9 +1473,6 @@ def processar_video_com_cta(input_path: str, cta_path: str, brilho: float,
 
     cmd = ["ffmpeg", "-y", "-i", input_path, "-loop", "1", "-t", str(duracao), "-i", cta_path]
 
-    # "ultrafast" prioriza velocidade — importante no plano gratuito (CPU
-    # bem limitada). O ganho de qualidade de presets mais lentos não compensa
-    # o tempo extra aqui.
     if tem_audio:
         filtro += f";[0:a]apad=pad_dur={duracao}[outa]"
         cmd += ["-filter_complex", filtro, "-map", "[outv]", "-map", "[outa]",
@@ -1514,11 +1488,6 @@ def processar_video_com_cta(input_path: str, cta_path: str, brilho: float,
         raise RuntimeError(resultado.stderr[-800:])
 
 
-# Quantos vídeos processar ao mesmo tempo. No plano Free/Starter (menos de
-# 1 CPU inteiro) o ganho é pequeno — vem principalmente das partes que
-# esperam rede/disco (upload, chamada da API de transcrição), não do
-# processamento de vídeo em si. A partir do plano Standard (1 CPU+) o ganho
-# fica bem mais real. Ajuste esse número conforme o plano do Render.
 EDITOR_WORKERS_PARALELOS = 2
 
 
@@ -1526,8 +1495,6 @@ def _processar_um_video(v: Path, pasta_saida: Path, cta_path: str, brilho: float
                          duracao: float, legenda_texto: str, legenda_modelo: str,
                          cor_fundo_citacao: str, modo_legenda: str, api_key: str,
                          job: dict, lock: threading.Lock):
-    """Processa 1 vídeo isoladamente — cada vídeo ganha sua própria pasta de
-    trabalho temporária, pra não colidir com os outros rodando em paralelo."""
     pasta_temp_video = pasta_saida.parent / f"tmp_{v.stem}"
     pasta_temp_video.mkdir(exist_ok=True)
 
@@ -1539,7 +1506,7 @@ def _processar_um_video(v: Path, pasta_saida: Path, cta_path: str, brilho: float
             with lock:
                 job["arquivo_atual"] = f"transcrevendo {v.name}"
             legenda_segmentos = transcrever_segmentos(api_key, str(v), pasta_temp_video)
-            texto_para_video = ""  # usa os segmentos, não texto fixo
+            texto_para_video = ""
 
         saida = pasta_saida / f"editado_{v.stem}.mp4"
         processar_video_com_cta(
@@ -1553,7 +1520,8 @@ def _processar_um_video(v: Path, pasta_saida: Path, cta_path: str, brilho: float
         return ("ok", saida, None)
     except Exception as e:
         return ("erro", v.name, str(e))
-    finally:shutil.rmtree(pasta_temp_video, ignore_errors=True)
+    finally:
+        shutil.rmtree(pasta_temp_video, ignore_errors=True)
 
 
 def editor_job_worker(job_id: str, pasta_videos: Path, cta_path: str, brilho: float,
@@ -1606,10 +1574,6 @@ def editor_job_worker(job_id: str, pasta_videos: Path, cta_path: str, brilho: fl
     shutil.rmtree(pasta_videos, ignore_errors=True)
 
 
-# ---------------------------------------------------------
-# Gerador IA: copies + imagens via OpenAI, cortadas em 9:16,
-# com opção de virar reels animados com som ambiente
-# ---------------------------------------------------------
 GERADOR_BASE_TMP = Path(tempfile.gettempdir()) / "gerador_jobs"
 GERADOR_BASE_TMP.mkdir(exist_ok=True)
 GERADOR_JOBS = {}
@@ -1628,14 +1592,10 @@ PROMPTS_ESTILO = {
     ),
 }
 
-MAX_IMAGENS_ANALISE_ESTILO = 10  # cap de imagens analisadas por chamada (custo/tamanho da requisição)
+MAX_IMAGENS_ANALISE_ESTILO = 10
 
 
 def analisar_estilo_visual(api_key: str, imagens_bytes: list) -> str:
-    """Manda as imagens de referência do usuário pro GPT-4o (visão) e pede
-    uma descrição REUTILIZÁVEL do padrão visual/fotográfico — explicitamente
-    sem reproduzir texto, marca ou logotipo específico das imagens originais,
-    só o estilo (composição, luz, materiais, enquadramento)."""
     conteudo = [{
         "type": "text",
         "text": (
@@ -1681,9 +1641,6 @@ MAX_IMAGENS_TRANSCRICAO_COPY = 10
 
 
 def transcrever_copies_de_imagens(imagens_bytes: list) -> list:
-    """Lê o texto de cada print via OCR local (Tesseract) — de graça, sem
-    chamar nenhuma API paga. Faz uma limpeza básica no texto extraído,
-    já que OCR de print de rede social pode pegar ruído (curtidas, ícones)."""
     textos = []
     for img_bytes in imagens_bytes[:MAX_IMAGENS_TRANSCRICAO_COPY]:
         try:
@@ -1692,8 +1649,6 @@ def transcrever_copies_de_imagens(imagens_bytes: list) -> list:
         except Exception:
             continue
 
-        # Limpeza básica: remove linhas muito curtas/isoladas (comuns em
-        # ruído de interface: números de likes, hora, ícones mal lidos)
         linhas = [l.strip() for l in texto_bruto.split("\n")]
         linhas_uteis = [l for l in linhas if len(l) > 3]
         texto_limpo = " ".join(linhas_uteis).strip()
@@ -1704,10 +1659,7 @@ def transcrever_copies_de_imagens(imagens_bytes: list) -> list:
     return textos
 
 
-
 def chamar_openai_copies(api_key: str, funil: str, exemplos: list, quantidade: int) -> list:
-    """Pede pra OpenAI gerar N copies (título/apoio/cta) originais, inspiradas
-    no funil e nos exemplos de referência fornecidos pelo usuário."""
     exemplos_txt = "\n".join(f"- {e}" for e in exemplos[:15]) if exemplos else "(nenhum exemplo fornecido ainda)"
 
     prompt_sistema = (
@@ -1752,8 +1704,6 @@ def chamar_openai_copies(api_key: str, funil: str, exemplos: list, quantidade: i
 
 
 def chamar_openai_imagem_grade(api_key: str, estilo: str, estilo_customizado: str = "") -> Image.Image:
-    """Pede pra OpenAI gerar 1 imagem retrato dividida em grade 2x2 (4 cenas
-    diferentes, sem texto), pra depois cortar em 4 imagens 9:16 separadas."""
     if estilo == "personalizado" and estilo_customizado:
         base_prompt = estilo_customizado
     else:
@@ -1793,7 +1743,6 @@ def chamar_openai_imagem_grade(api_key: str, estilo: str, estilo_customizado: st
 
 
 def cortar_grade_em_quatro(img: Image.Image) -> list:
-    """Corta uma imagem 1024x1536 (grade 2x2) em 4 imagens 9:16 (1080x1920)."""
     w, h = img.size
     qw, qh = w // 2, h // 2
 
@@ -1812,7 +1761,8 @@ def cortar_grade_em_quatro(img: Image.Image) -> list:
 
 def _quebrar_texto(draw, texto, fonte, largura_max):
     palavras = texto.split()
-    linhas, linha_atual = [], ""for palavra in palavras:
+    linhas, linha_atual = [], ""
+    for palavra in palavras:
         teste = (linha_atual + " " + palavra).strip()
         bbox = draw.textbbox((0, 0), teste, font=fonte)
         if bbox[2] - bbox[0] <= largura_max:
@@ -1828,8 +1778,6 @@ def _quebrar_texto(draw, texto, fonte, largura_max):
 
 def aplicar_texto_quote(img: Image.Image, titulo: str, apoio: str, cta: str,
                          cor_destaque=(255, 45, 85)) -> Image.Image:
-    """Sobrepõe título + apoio (topo) e CTA (base) na imagem, com gradientes
-    escuros por trás pra garantir legibilidade em qualquer fundo."""
     img = img.convert("RGBA")
     w, h = img.size
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -1874,8 +1822,6 @@ def aplicar_texto_quote(img: Image.Image, titulo: str, apoio: str, cta: str,
 
 
 def gerar_som_ambiente(caminho_saida: str, duracao: float = 6.0):
-    """Sintetiza um som ambiente suave (acorde de 3 tons com fade), sem
-    depender de nenhuma API — usado como música de fundo dos reels."""
     cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", f"sine=frequency=196:duration={duracao}",
@@ -1890,7 +1836,6 @@ def gerar_som_ambiente(caminho_saida: str, duracao: float = 6.0):
 
 
 def criar_reel_de_imagem(caminho_imagem: str, caminho_audio: str, caminho_saida: str, duracao: float = 6.0):
-    """Anima a imagem com um zoom lento (Ken Burns) e junta com o som ambiente."""
     frames = int(duracao * 25)
     cmd = [
         "ffmpeg", "-y",
@@ -1953,7 +1898,7 @@ def gerador_job_worker(job_id: str, api_key: str, funil: str, exemplos: list,
                     criar_reel_de_imagem(str(img_path), str(audio_path), str(reel_path), duracao=6.0)
                     arquivos_finais.append(reel_path)
                 except Exception:
-                    pass  # se um reel falhar, mantém a imagem estática e segue
+                    pass
                 job["concluidos_reels"] += 1
 
         zip_path = GERADOR_BASE_TMP / f"{job_id}.zip"
@@ -1978,7 +1923,6 @@ def gerador_job_worker(job_id: str, api_key: str, funil: str, exemplos: list,
         job["status"] = "erro"
         job["erro"] = str(e)
     finally:
-        # Mantém as imagens/vídeos zipados, mas limpa os arquivos soltos
         for f in pasta_job.glob("*"):
             if f.suffix != ".zip":
                 try:
@@ -2001,9 +1945,6 @@ def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int):
 
     ydl_opts = {
         "outtmpl": str(pasta / "%(upload_date)s_%(id)s_%(title).50s.%(ext)s"),
-        # "best" pega um único arquivo já pronto (vídeo+áudio juntos) quando
-        # disponível, evitando o passo extra de merge via ffmpeg — mais rápido
-        # que "bestvideo+bestaudio" na maioria dos vídeos do TikTok.
         "format": "best",
         "ignoreerrors": True,
         "progress_hooks": [hook],
@@ -2014,8 +1955,6 @@ def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int):
         "retries": 3,
     }
 
-    # Só aplica intervalo quando for uma conta/perfil (playlist).
-    # Vídeo único não usa esses parâmetros.
     if not eh_video_unico(url_alvo):
         ydl_opts["playliststart"] = inicio
         ydl_opts["playlistend"] = fim
@@ -2054,9 +1993,6 @@ def index():
 
 
 def _gerar_icone(size):
-    """Desenha o ícone do app na hora (nota musical estilo TikTok, ciano/
-    rosa sobre fundo preto) — evita guardar uma string enorme no código,
-    que era a causa mais provável do arquivo cortar ao copiar no celular."""
     bg = Image.new("RGBA", (size, size), (10, 10, 10, 255))
     radius = int(size * 0.22)
     mask = Image.new("L", (size, size), 0)
@@ -2071,7 +2007,8 @@ def _gerar_icone(size):
         draw_obj.rounded_rectangle(
             [ox, oy - note_h / 2, ox + stem_w, oy + note_h / 2 - size * 0.14],
             radius=stem_w / 2, fill=color,
-        )head_r = size * 0.14
+        )
+        head_r = size * 0.14
         draw_obj.ellipse(
             [ox - head_r + stem_w / 2, oy + note_h / 2 - head_r * 2,
              ox + head_r + stem_w / 2, oy + note_h / 2],
@@ -2144,7 +2081,7 @@ def editor_iniciar():
         brilho_bruto = float(request.form.get("brilho", 0))
     except (TypeError, ValueError):
         brilho_bruto = 0
-    brilho = max(-1.0, min(brilho_bruto / 100.0, 1.0))  # escala -50..50 -> -0.5..0.5
+    brilho = max(-1.0, min(brilho_bruto / 100.0, 1.0))
 
     try:
         duracao = float(request.form.get("duracao", 5))
@@ -2159,7 +2096,7 @@ def editor_iniciar():
     if usar_legenda and modo_legenda == "automatica":
         if not api_key:
             return jsonify({"erro": "Configura sua chave OpenAI na aba Config primeiro"}), 400
-        legenda_texto = "__AUTO__"  # sinaliza pro worker que é modo automático
+        legenda_texto = "__AUTO__"
     else:
         legenda_texto = request.form.get("texto_legenda", "").strip() if usar_legenda else ""
 
@@ -2220,7 +2157,6 @@ def editor_status(job_id):
 
 @app.route("/api/editor/baixar/<job_id>")
 def editor_baixar(job_id):
-    # job_id vem da URL — valida o formato antes de usar em caminho de arquivo
     if not re.fullmatch(r"[a-f0-9]{8,32}", job_id):
         return jsonify({"erro": "id inválido"}), 400
 
@@ -2228,8 +2164,6 @@ def editor_baixar(job_id):
     if job and job["status"] == "concluido":
         return send_file(job["zip_path"], as_attachment=True, download_name=f"editados_{job_id}.zip")
 
-    # Não está mais na memória (ex: processo reiniciou) — tenta achar o
-    # zip direto no disco, que sobrevive a reinícios.
     zip_path = EDITOR_BASE_TMP / f"{job_id}.zip"
     if zip_path.exists():
         return send_file(str(zip_path), as_attachment=True, download_name=f"editados_{job_id}.zip")
@@ -2239,10 +2173,6 @@ def editor_baixar(job_id):
 
 @app.route("/api/editor/recentes")
 def editor_recentes():
-    """Lista os processamentos das últimas horas — serve pra recuperar um
-    job cuja tela (ou até a memória do servidor) foi perdida. Combina o que
-    está em memória com uma varredura direta dos arquivos .zip no disco,
-    porque o disco sobrevive a reinícios do processo, a memória não."""
     agora = time.time()
     recentes = {}
 
@@ -2258,8 +2188,6 @@ def editor_recentes():
             "minutos_atras": round(idade / 60, 1),
         }
 
-    # Varre o disco por .zip que a memória não conhece mais (ex: processo
-    # reiniciou depois que o job terminou, mas antes de você conferir).
     for zip_path in EDITOR_BASE_TMP.glob("*.zip"):
         jid = zip_path.stem
         if jid in recentes:
@@ -2316,7 +2244,7 @@ def gerador_iniciar():
     except (TypeError, ValueError):
         quantidade = 8
     quantidade = max(4, min(quantidade, MAX_IMAGENS_GERADOR))
-    quantidade = (quantidade + 3) // 4 * 4  # arredonda pra múltiplo de 4
+    quantidade = (quantidade + 3) // 4 * 4
 
     job_id = uuid.uuid4().hex[:12]
     GERADOR_JOBS[job_id] = {
@@ -2329,7 +2257,9 @@ def gerador_iniciar():
     t = threading.Thread(
         target=gerador_job_worker,
         args=(job_id, api_key, funil, exemplos, estilo, quantidade, gerar_reels, estilo_customizado),
-        daemon=True,t.start()
+        daemon=True,
+    )
+    t.start()
 
     return jsonify({"job_id": job_id})
 
@@ -2380,8 +2310,6 @@ def gerador_transcrever_copies():
 def gerador_status(job_id):
     job = GERADOR_JOBS.get(job_id)
     if not job:
-        # Não está mais na memória — mas se o zip existe no disco, o
-        # trabalho terminou antes do processo reiniciar; informa concluído.
         if re.fullmatch(r"[a-f0-9]{8,32}", job_id) and (GERADOR_BASE_TMP / f"{job_id}.zip").exists():
             return jsonify({"status": "concluido", "concluidos": None, "concluidos_reels": None, "total": None})
         return jsonify({"erro": "job não encontrado"}), 404
@@ -2414,8 +2342,6 @@ def gerador_baixar(job_id):
 
 @app.route("/api/gerador/recentes")
 def gerador_recentes():
-    """Lista processamentos das últimas horas, combinando memória + disco
-    (o disco sobrevive a reinícios do processo, a memória não)."""
     agora = time.time()
     recentes = {}
 
@@ -2523,7 +2449,6 @@ def baixar(job_id):
 
 @app.route("/api/recentes")
 def baixador_recentes():
-    """Lista processamentos das últimas horas, combinando memória + disco."""
     agora = time.time()
     recentes = {}
 
@@ -2557,7 +2482,6 @@ def baixador_recentes():
     return jsonify({"jobs": lista})
 
 
-# Limpeza básica de jobs antigos (roda a cada request, suficiente pra uso pessoal)
 @app.before_request
 def limpar_jobs_antigos():
     agora = time.time()
@@ -2593,4 +2517,3 @@ def limpar_jobs_antigos():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-    
