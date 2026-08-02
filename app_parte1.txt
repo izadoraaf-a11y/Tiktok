@@ -1,0 +1,1273 @@
+import os
+import re
+import shutil
+import tempfile
+import zipfile
+import uuid
+import threading
+import time
+import base64
+import json
+import subprocess
+import io
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
+import pytesseract
+from PIL import Image, ImageDraw, ImageFont
+from flask import Flask, request, jsonify, send_file, Response
+from werkzeug.utils import secure_filename
+
+import yt_dlp
+
+app = Flask(__name__)
+
+# Ícone do app (estilo TikTok: nota musical cyan/pink) embutido em base64,
+# pra não precisar de arquivo separado nem pasta de assets.
+ICON_192_B64 = "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"
+ICON_512_B64 = "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"
+
+PAGINA_HTML = """
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Baixador de Vídeos</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#0f0f0f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Baixador">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Roboto, Arial, sans-serif;
+    background: #0f0f0f;
+    color: #f5f5f5;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px;
+    min-height: 100vh;
+  }
+  .card { width: 100%; max-width: 420px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #a0a0a0; font-size: 14px; margin-top: 0; margin-bottom: 24px; }
+  input {
+    width: 100%; padding: 14px; border-radius: 10px; border: 1px solid #333;
+    background: #1a1a1a; color: #fff; font-size: 16px; margin-bottom: 12px;
+  }
+  button {
+    width: 100%; padding: 14px; border-radius: 10px; border: none;
+    background: linear-gradient(135deg, #ff2d55, #25f4ee);
+    color: #000; font-weight: 700; font-size: 16px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; }
+  button.secundario {
+    width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #333;
+    background: #1a1a1a; color: #ccc; font-weight: 600; font-size: 13px; cursor: pointer;
+  }
+  .job-recente {
+    background: #1a1a1a; border: 1px solid #262626; border-radius: 10px;
+    padding: 12px; margin-bottom: 8px; font-size: 13px;
+  }
+  .job-recente a {
+    display: inline-block; margin-top: 6px; color: #25f4ee; font-weight: 700; text-decoration: none;
+  }
+  #status-box { margin-top: 20px; padding: 16px; border-radius: 10px; background: #1a1a1a; display: none; }
+  #status-text { font-size: 14px; margin-bottom: 8px; }
+  .bar-bg { background: #333; border-radius: 6px; height: 8px; overflow: hidden; }
+  .bar-fill { background: linear-gradient(135deg, #ff2d55, #25f4ee); height: 100%; width: 0%; transition: width 0.3s; }
+  #download-link {
+    display: none; margin-top: 16px; text-align: center; padding: 14px;
+    border-radius: 10px; background: #16a34a; color: #fff; text-decoration: none; font-weight: 700;
+  }
+  .aviso { font-size: 12px; color: #777; margin-top: 24px; line-height: 1.5; }
+  label { font-size: 13px; color: #a0a0a0; }
+  .nav { display: flex; gap: 8px; margin-bottom: 20px; }
+  .nav a {
+    flex: 1; text-align: center; padding: 10px; border-radius: 8px;
+    text-decoration: none; font-size: 13px; font-weight: 600; color: #888;
+    background: #1a1a1a; border: 1px solid #262626;
+  }
+  .nav a.ativo { color: #000; background: linear-gradient(135deg, #ff2d55, #25f4ee); border: none; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="nav">
+      <a href="/" class="ativo">Baixador</a>
+      <a href="/editor">Editor</a>
+      <a href="/gerador">Gerador</a>
+      <a href="/config">Config</a>
+    </div>
+    <h1>Baixador de Vídeos</h1>
+    <p class="sub">TikTok, Instagram e Facebook — cole o link e baixe sem marca d'água</p>
+
+    <input id="conta" type="text" placeholder="Link do vídeo, reel, post ou perfil" />
+
+    <div id="campo-limite" style="display:flex; gap:10px;">
+      <div style="flex:1;">
+        <label for="de">Do vídeo nº</label>
+        <input id="de" type="number" value="1" min="1" max="500" style="margin-top:6px;" />
+      </div>
+      <div style="flex:1;">
+        <label for="ate">Até o nº</label>
+        <input id="ate" type="number" value="10" min="1" max="500" style="margin-top:6px;" />
+      </div>
+    </div>
+    <p style="font-size:11px; color:#666; margin-top:-6px; margin-bottom:12px;">
+      Contando a partir do mais recente. Ex: 1 até 10 = os 10 mais novos. 11 até 20 = os próximos 10.
+      (Intervalo só funciona pra conta do TikTok — Instagram e Facebook, use link de vídeo único.)
+    </p>
+
+    <button id="btn-iniciar" onclick="iniciar()">Baixar</button>
+
+    <button type="button" class="secundario" style="margin-top:10px;" onclick="verRecentes()">
+      🕓 Ver processamentos recentes (última hora)
+    </button>
+    <div id="lista-recentes" style="display:none; margin-top:12px;"></div>
+
+    <div id="status-box">
+      <div id="status-text">Preparando...</div>
+      <div class="bar-bg"><div id="bar-fill" class="bar-fill"></div></div>
+    </div>
+
+    <a id="download-link" href="#">Baixar ZIP com os vídeos</a>
+
+    <p class="aviso">
+      TikTok: aceita vídeo único ou conta inteira (com intervalo). Instagram e
+      Facebook: funciona melhor com link de post/reel/vídeo específico —
+      perfis e conteúdo privado não funcionam nessas duas plataformas sem login.
+      Uso pessoal — respeite os direitos dos criadores.
+    </p>
+  </div>
+
+<script>
+let jobId = null;
+let poller = null;
+
+async function iniciar() {
+  const conta = document.getElementById('conta').value.trim();
+  if (!conta) { alert('Digite o @ ou link da conta'); return; }
+  const de = document.getElementById('de').value || 1;
+  const ate = document.getElementById('ate').value || 10;
+
+  document.getElementById('btn-iniciar').disabled = true;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('download-link').style.display = 'none';
+  document.getElementById('status-text').textContent = 'Iniciando...';
+  document.getElementById('bar-fill').style.width = '5%';
+
+  let resp, data;
+  try {
+    resp = await fetch('/api/iniciar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conta, de, ate })
+    });
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Erro de conexão ao iniciar. Verifica a internet e tenta de novo.';
+    document.getElementById('btn-iniciar').disabled = false;
+    return;
+  }
+
+  if (data.erro) {
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-iniciar').disabled = false;
+    return;
+  }
+
+  jobId = data.job_id;
+  localStorage.setItem('baixador_job_ativo', jobId);
+  poller = setInterval(checarStatus, 2000);
+}
+
+async function checarStatus() {
+  let resp, data;
+  try {
+    resp = await fetch('/api/status/' + jobId);
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Conexão instável... tentando de novo (o processamento continua no servidor).';
+    return; // não limpa o poller — tenta de novo na próxima rodada
+  }
+
+  if (data.status === 'baixando') {
+    document.getElementById('status-text').textContent = `Baixando... (${data.concluidos} vídeos concluídos)`;
+    const pct = Math.min(90, 10 + data.concluidos * 5);
+    document.getElementById('bar-fill').style.width = pct + '%';
+  } else if (data.status === 'na_fila' || data.status === 'iniciando') {
+    document.getElementById('status-text').textContent = 'Preparando...';
+  } else if (data.status === 'concluido') {
+    clearInterval(poller);
+    localStorage.removeItem('baixador_job_ativo');
+    const totalTexto = data.total_videos != null ? `${data.total_videos} vídeos baixados` : 'vídeos prontos';
+    document.getElementById('status-text').textContent = `Pronto! ${totalTexto}.`;
+    document.getElementById('bar-fill').style.width = '100%';
+    const link = document.getElementById('download-link');
+    link.href = '/api/baixar/' + jobId;
+    link.style.display = 'block';
+    document.getElementById('btn-iniciar').disabled = false;
+  } else if (data.status === 'erro') {
+    clearInterval(poller);
+    localStorage.removeItem('baixador_job_ativo');
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-iniciar').disabled = false;
+  }
+}
+
+async function verRecentes() {
+  const div = document.getElementById('lista-recentes');
+  div.style.display = 'block';
+  div.innerHTML = '<p class="ajuda">Buscando...</p>';
+
+  const resp = await fetch('/api/recentes');
+  const data = await resp.json();
+
+  if (!data.jobs || data.jobs.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhum processamento na última hora.</p>';
+    return;
+  }
+
+  div.innerHTML = '';
+  data.jobs.forEach(j => {
+    const item = document.createElement('div');
+    item.className = 'job-recente';
+    let statusTexto = '';
+    if (j.status === 'concluido' && j.recuperado_do_disco) statusTexto = '✅ Pronto (recuperado do disco)';
+    else if (j.status === 'concluido') statusTexto = `✅ Pronto — ${j.total ?? '?'} vídeo(s)`;
+    else if (j.status === 'erro') statusTexto = '❌ Erro';
+    else statusTexto = '⏳ Processando';
+
+    item.innerHTML = `
+      <div>${statusTexto} — há ${j.minutos_atras} min</div>
+      <div style="color:#666; font-size:11px;">ID: ${j.job_id}</div>
+      ${j.status === 'concluido' ? `<a href="/api/baixar/${j.job_id}">⬇ Baixar ZIP</a>` : ''}
+    `;
+    div.appendChild(item);
+  });
+}
+
+// Retoma automaticamente um processamento que ficou rodando em segundo
+// plano no servidor (ex: você desligou o celular ou saiu do app).
+(function retomarJobAtivo() {
+  const jobSalvo = localStorage.getItem('baixador_job_ativo');
+  if (!jobSalvo) return;
+  jobId = jobSalvo;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('status-text').textContent = 'Retomando processamento anterior...';
+  document.getElementById('btn-iniciar').disabled = true;
+  poller = setInterval(checarStatus, 2000);
+  checarStatus();
+})();
+</script>
+</body>
+</html>
+"""
+
+PAGINA_EDITOR_HTML = """
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auto-editor</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#0f0f0f">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Roboto, Arial, sans-serif;
+    background: #0f0f0f;
+    color: #f5f5f5;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px;
+    min-height: 100vh;
+  }
+  .card { width: 100%; max-width: 420px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #a0a0a0; font-size: 14px; margin-top: 0; margin-bottom: 20px; }
+  button.secundario {
+    width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #333;
+    background: #1a1a1a; color: #ccc; font-weight: 600; font-size: 13px; cursor: pointer;
+  }
+  .job-recente {
+    background: #1a1a1a; border: 1px solid #262626; border-radius: 10px;
+    padding: 12px; margin-bottom: 8px; font-size: 13px;
+  }
+  .job-recente a {
+    display: inline-block; margin-top: 6px; color: #25f4ee; font-weight: 700; text-decoration: none;
+  }
+  .nav { display: flex; gap: 8px; margin-bottom: 20px; }
+  .nav a {
+    flex: 1; text-align: center; padding: 10px; border-radius: 8px;
+    text-decoration: none; font-size: 13px; font-weight: 600; color: #888;
+    background: #1a1a1a; border: 1px solid #262626;
+  }
+  .nav a.ativo { color: #000; background: linear-gradient(135deg, #ff2d55, #25f4ee); border: none; }
+  label { font-size: 13px; color: #ccc; display: block; margin-bottom: 6px; font-weight: 600; }
+  .campo { margin-bottom: 18px; }
+  .ajuda { font-size: 11px; color: #666; margin-top: 4px; line-height: 1.4; }
+  input[type="file"] {
+    width: 100%; padding: 12px; border-radius: 10px; border: 1px dashed #333;
+    background: #1a1a1a; color: #ccc; font-size: 13px;
+  }
+  input[type="number"], input[type="range"] {
+    width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #333;
+    background: #1a1a1a; color: #fff; font-size: 16px;
+  }
+  input[type="range"] { padding: 0; height: 40px; }
+  .valor-brilho { text-align: center; font-size: 13px; color: #25f4ee; margin-top: 4px; }
+  button {
+    width: 100%; padding: 14px; border-radius: 10px; border: none;
+    background: linear-gradient(135deg, #ff2d55, #25f4ee);
+    color: #000; font-weight: 700; font-size: 16px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; }
+  #status-box { margin-top: 20px; padding: 16px; border-radius: 10px; background: #1a1a1a; display: none; }
+  #status-text { font-size: 14px; margin-bottom: 8px; }
+  .bar-bg { background: #333; border-radius: 6px; height: 8px; overflow: hidden; }
+  .bar-fill { background: linear-gradient(135deg, #ff2d55, #25f4ee); height: 100%; width: 0%; transition: width 0.3s; }
+  #download-link {
+    display: none; margin-top: 16px; text-align: center; padding: 14px;
+    border-radius: 10px; background: #16a34a; color: #fff; text-decoration: none; font-weight: 700;
+  }
+  .aviso { font-size: 12px; color: #777; margin-top: 24px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="nav">
+      <a href="/">Baixador</a>
+      <a href="/editor" class="ativo">Editor</a>
+      <a href="/gerador">Gerador</a>
+      <a href="/config">Config</a>
+    </div>
+    <h1>Auto-editor</h1>
+    <p class="sub">Filtro de brilho + CTA em massa no final dos seus vídeos</p>
+
+    <button type="button" class="secundario" style="margin-bottom:18px;" onclick="verRecentes()">
+      🕓 Ver processamentos recentes (última hora)
+    </button>
+    <div id="lista-recentes" style="display:none; margin-bottom:20px;"></div>
+
+    <div class="campo">
+      <label>Seus vídeos (pode escolher vários)</label>
+      <input id="videos" type="file" accept="video/*" multiple />
+      <p class="ajuda">Máximo de 15 vídeos por vez. Vídeos grandes (4K) são reduzidos automaticamente pra processar mais rápido.</p>
+    </div>
+
+    <div class="campo">
+      <label>Imagem do CTA</label>
+      <input id="cta" type="file" accept="image/*" />
+      <p class="ajuda">Essa imagem vai aparecer no final de cada vídeo.</p>
+    </div>
+
+    <div class="campo">
+      <label>Filtro de brilho</label>
+      <input id="brilho" type="range" min="-50" max="50" value="0" oninput="atualizarBrilho()" />
+      <p class="valor-brilho" id="valor-brilho">Neutro (0)</p>
+    </div>
+
+    <div class="campo">
+      <label>Duração do CTA (segundos)</label>
+      <input id="duracao" type="number" value="5" min="1" max="15" />
+    </div>
+
+    <div class="campo" style="display:flex; align-items:center; gap:8px;">
+      <input id="usar-legenda" type="checkbox" style="width:auto;" onchange="alternarLegenda()" />
+      <label style="margin-bottom:0;" for="usar-legenda">Adicionar legenda no vídeo</label>
+    </div>
+
+    <div id="campos-legenda" style="display:none;">
+      <div class="campo" style="display:flex; gap:16px;">
+        <label style="display:flex; align-items:center; gap:6px; margin-bottom:0; font-weight:400;">
+          <input type="radio" name="modo-legenda" value="automatica" checked onchange="alternarModoLegenda()" style="width:auto;" /> Automática (transcreve o áudio)
+        </label>
+      </div>
+      <div class="campo" style="display:flex; gap:16px; margin-top:-10px;">
+        <label style="display:flex; align-items:center; gap:6px; margin-bottom:0; font-weight:400;">
+          <input type="radio" name="modo-legenda" value="manual" onchange="alternarModoLegenda()" style="width:auto;" /> Digitar o texto
+        </label>
+      </div>
+
+      <div id="status-chave-editor" class="campo" style="background:#1a1a1a; border:1px solid #262626; border-radius:10px; padding:10px 12px; font-size:12px;">
+        Verificando chave da API...
+      </div>
+
+      <div id="campo-texto-manual" class="campo" style="display:none;">
+        <label>Texto da legenda</label>
+        <input id="texto-legenda" type="text" placeholder="Ex: Não perca essa dica!" style="padding:12px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#fff; font-size:15px;" />
+      </div>
+
+      <div class="campo">
+        <label>Modelo da legenda</label>
+        <select id="modelo-legenda" onchange="alternarCorFundo()" style="width:100%; padding:12px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#fff; font-size:15px;">
+          <option value="classico">Clássico — branco, embaixo</option>
+          <option value="impacto">Impacto — amarelo, no topo</option>
+          <option value="neon">Neon — ciano, no centro</option>
+          <option value="minimalista">Minimalista — pequeno, canto</option>
+          <option value="citacao">Citação — faixa colorida, centro</option>
+        </select>
+      </div>
+
+      <div id="campo-cor-fundo" style="display:none;">
+        <div class="campo">
+          <label>Cor da faixa</label>
+          <select id="cor-fundo-citacao" style="width:100%; padding:12px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#fff; font-size:15px;">
+            <option value="branco">Branco (texto preto)</option>
+            <option value="preto">Preto (texto branco)</option>
+            <option value="vermelho">Vermelho (texto branco)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <button id="btn-processar" onclick="processar()">Processar vídeos</button>
+
+    <div id="status-box">
+      <div id="status-text">Preparando...</div>
+      <div class="bar-bg"><div id="bar-fill" class="bar-fill"></div></div>
+    </div>
+
+    <a id="download-link" href="#">Baixar ZIP com os vídeos prontos</a>
+
+    <p class="aviso">
+      Use só com vídeos que são seus (ou que você tem autorização de editar).
+      Processamento é pesado — no plano gratuito pode demorar alguns minutos
+      por vídeo. Vídeos muito grandes podem falhar por limite de memória.
+    </p>
+  </div>
+
+<script>
+let jobId = null;
+let poller = null;
+
+function atualizarBrilho() {
+  const v = document.getElementById('brilho').value;
+  const label = v == 0 ? 'Neutro (0)' : (v > 0 ? `Mais claro (+${v})` : `Mais escuro (${v})`);
+  document.getElementById('valor-brilho').textContent = label;
+}
+
+function alternarLegenda() {
+  const marcado = document.getElementById('usar-legenda').checked;
+  document.getElementById('campos-legenda').style.display = marcado ? 'block' : 'none';
+  if (marcado) { atualizarStatusChaveEditor(); alternarModoLegenda(); }
+}
+
+function alternarModoLegenda() {
+  const modo = document.querySelector('input[name="modo-legenda"]:checked').value;
+  document.getElementById('campo-texto-manual').style.display = modo === 'manual' ? 'block' : 'none';
+  document.getElementById('status-chave-editor').style.display = modo === 'automatica' ? 'block' : 'none';
+}
+
+function atualizarStatusChaveEditor() {
+  const chave = localStorage.getItem('api_key_openai') || '';
+  const div = document.getElementById('status-chave-editor');
+  if (chave) {
+    div.innerHTML = '✅ Chave OpenAI configurada — a legenda vai ser transcrita automaticamente';
+  } else {
+    div.innerHTML = '⚠️ Precisa configurar a chave OpenAI — <a href="/config" style="color:#ff2d55; font-weight:700;">configurar agora</a>';
+  }
+}
+
+function alternarCorFundo() {
+  const modelo = document.getElementById('modelo-legenda').value;
+  document.getElementById('campo-cor-fundo').style.display = modelo === 'citacao' ? 'block' : 'none';
+}
+
+async function processar() {
+  const videos = document.getElementById('videos').files;
+  const cta = document.getElementById('cta').files[0];
+  const brilho = document.getElementById('brilho').value;
+  const duracao = document.getElementById('duracao').value || 5;
+  const usarLegenda = document.getElementById('usar-legenda').checked;
+  const modoLegenda = usarLegenda ? document.querySelector('input[name="modo-legenda"]:checked').value : 'manual';
+  const textoLegenda = document.getElementById('texto-legenda').value.trim();
+  const modeloLegenda = document.getElementById('modelo-legenda').value;
+  const corFundoCitacao = document.getElementById('cor-fundo-citacao').value;
+  const apiKey = localStorage.getItem('api_key_openai') || '';
+
+  if (videos.length === 0) { alert('Escolhe pelo menos 1 vídeo'); return; }
+  if (!cta) { alert('Escolhe a imagem do CTA'); return; }
+  if (videos.length > 15) { alert('Máximo de 15 vídeos por vez'); return; }
+  if (usarLegenda && modoLegenda === 'manual' && !textoLegenda) { alert('Digite o texto da legenda ou escolhe "Automática"'); return; }
+  if (usarLegenda && modoLegenda === 'automatica' && !apiKey) { alert('Configura sua chave OpenAI na aba Config primeiro'); return; }
+
+  const formData = new FormData();
+  for (const v of videos) formData.append('videos', v);
+  formData.append('cta', cta);
+  formData.append('brilho', brilho);
+  formData.append('duracao', duracao);
+  formData.append('usar_legenda', usarLegenda ? '1' : '0');
+  formData.append('modo_legenda', modoLegenda);
+  formData.append('texto_legenda', textoLegenda);
+  formData.append('modelo_legenda', modeloLegenda);
+  formData.append('cor_fundo_citacao', corFundoCitacao);
+  formData.append('api_key', apiKey);
+
+  document.getElementById('btn-processar').disabled = true;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('download-link').style.display = 'none';
+  document.getElementById('status-text').textContent = 'Enviando arquivos...';
+  document.getElementById('bar-fill').style.width = '5%';
+
+  let resp;
+  try {
+    resp = await fetch('/api/editor/iniciar', { method: 'POST', body: formData });
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Erro ao enviar. Tenta de novo.';
+    document.getElementById('btn-processar').disabled = false;
+    return;
+  }
+  const data = await resp.json();
+
+  if (data.erro) {
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-processar').disabled = false;
+    return;
+  }
+
+  jobId = data.job_id;
+  localStorage.setItem('editor_job_ativo', jobId);
+  poller = setInterval(checarStatus, 3000);
+}
+
+async function checarStatus() {
+  let resp, data;
+  try {
+    resp = await fetch('/api/editor/status/' + jobId);
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Conexão instável... tentando de novo (o processamento continua no servidor).';
+    return;
+  }
+
+  if (data.status === 'processando') {
+    const extra = data.arquivo_atual && data.arquivo_atual.startsWith('transcrevendo') ? ' — transcrevendo áudio...' : '';
+    document.getElementById('status-text').textContent = `Processando... (${data.concluidos}/${data.total} prontos)${extra}`;
+    const pct = Math.min(90, 10 + (data.concluidos / Math.max(data.total,1)) * 80);
+    document.getElementById('bar-fill').style.width = pct + '%';
+  } else if (data.status === 'na_fila') {
+    document.getElementById('status-text').textContent = 'Preparando...';
+  } else if (data.status === 'concluido') {
+    clearInterval(poller);
+    localStorage.removeItem('editor_job_ativo');
+    document.getElementById('status-text').textContent = `Pronto! ${data.total} vídeo(s) processado(s).`;
+    document.getElementById('bar-fill').style.width = '100%';
+    const link = document.getElementById('download-link');
+    link.href = '/api/editor/baixar/' + jobId;
+    link.style.display = 'block';
+    document.getElementById('btn-processar').disabled = false;
+  } else if (data.status === 'erro') {
+    clearInterval(poller);
+    localStorage.removeItem('editor_job_ativo');
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-processar').disabled = false;
+  }
+}
+
+// Retoma automaticamente um processamento que ficou rodando em segundo
+// plano no servidor (ex: você trocou de app e a tela "esqueceu" o job).
+(function retomarJobAtivo() {
+  const jobSalvo = localStorage.getItem('editor_job_ativo');
+  if (!jobSalvo) return;
+  jobId = jobSalvo;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('status-text').textContent = 'Retomando processamento anterior...';
+  document.getElementById('btn-processar').disabled = true;
+  poller = setInterval(checarStatus, 3000);
+  checarStatus();
+})();
+
+async function verRecentes() {
+  const div = document.getElementById('lista-recentes');
+  div.style.display = 'block';
+  div.innerHTML = '<p class="ajuda">Buscando...</p>';
+
+  const resp = await fetch('/api/editor/recentes');
+  const data = await resp.json();
+
+  if (!data.jobs || data.jobs.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhum processamento na última hora.</p>';
+    return;
+  }
+
+  div.innerHTML = '';
+  data.jobs.forEach(j => {
+    const item = document.createElement('div');
+    item.className = 'job-recente';
+    let statusTexto = '';
+    if (j.status === 'concluido' && j.recuperado_do_disco) statusTexto = '✅ Pronto (recuperado do disco)';
+    else if (j.status === 'concluido') statusTexto = `✅ Pronto — ${j.total} vídeo(s)`;
+    else if (j.status === 'erro') statusTexto = '❌ Erro';
+    else statusTexto = `⏳ Processando (${j.concluidos}/${j.total})`;
+
+    item.innerHTML = `
+      <div>${statusTexto} — há ${j.minutos_atras} min</div>
+      <div style="color:#666; font-size:11px;">ID: ${j.job_id}</div>
+      ${j.status === 'concluido' ? `<a href="/api/editor/baixar/${j.job_id}">⬇ Baixar ZIP</a>` : ''}
+    `;
+    div.appendChild(item);
+  });
+}
+</script>
+</body>
+</html>
+"""
+
+
+PAGINA_GERADOR_HTML = """
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gerador IA</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#0f0f0f">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Roboto, Arial, sans-serif;
+    background: #0f0f0f;
+    color: #f5f5f5;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px 60px;
+    min-height: 100vh;
+  }
+  .card { width: 100%; max-width: 420px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  h2 { font-size: 15px; margin: 28px 0 10px; color: #ddd; }
+  p.sub { color: #a0a0a0; font-size: 14px; margin-top: 0; margin-bottom: 20px; }
+  .nav { display: flex; gap: 8px; margin-bottom: 20px; }
+  .nav a {
+    flex: 1; text-align: center; padding: 10px; border-radius: 8px;
+    text-decoration: none; font-size: 13px; font-weight: 600; color: #888;
+    background: #1a1a1a; border: 1px solid #262626;
+  }
+  .nav a.ativo { color: #000; background: linear-gradient(135deg, #ff2d55, #25f4ee); border: none; }
+  label { font-size: 13px; color: #ccc; display: block; margin-bottom: 6px; font-weight: 600; }
+  .campo { margin-bottom: 16px; }
+  .ajuda { font-size: 11px; color: #666; margin-top: 4px; line-height: 1.4; }
+  input[type="text"], input[type="password"], input[type="number"], textarea, select {
+    width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #333;
+    background: #1a1a1a; color: #fff; font-size: 15px; font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 70px; }
+  button {
+    width: 100%; padding: 14px; border-radius: 10px; border: none;
+    background: linear-gradient(135deg, #ff2d55, #25f4ee);
+    color: #000; font-weight: 700; font-size: 16px; cursor: pointer;
+  }
+  button.secundario {
+    background: #1a1a1a; color: #ccc; border: 1px solid #333; font-weight: 600; font-size: 14px; padding: 10px;
+  }
+  button:disabled { opacity: 0.4; }
+  .exemplo-item {
+    display: flex; gap: 8px; align-items: flex-start; background: #1a1a1a;
+    border: 1px solid #262626; border-radius: 8px; padding: 10px; margin-bottom: 8px;
+  }
+  .exemplo-texto { flex: 1; font-size: 13px; color: #ccc; white-space: pre-wrap; }
+  .exemplo-del { color: #ff2d55; background: none; border: none; font-size: 13px; width: auto; padding: 4px 8px; }
+  .job-recente {
+    background: #1a1a1a; border: 1px solid #262626; border-radius: 10px;
+    padding: 12px; margin-bottom: 8px; font-size: 13px;
+  }
+  .job-recente a {
+    display: inline-block; margin-top: 6px; color: #25f4ee; font-weight: 700; text-decoration: none;
+  }
+  #status-box { margin-top: 20px; padding: 16px; border-radius: 10px; background: #1a1a1a; display: none; }
+  #status-text { font-size: 14px; margin-bottom: 8px; }
+  .bar-bg { background: #333; border-radius: 6px; height: 8px; overflow: hidden; }
+  .bar-fill { background: linear-gradient(135deg, #ff2d55, #25f4ee); height: 100%; width: 0%; transition: width 0.3s; }
+  #download-link {
+    display: none; margin-top: 16px; text-align: center; padding: 14px;
+    border-radius: 10px; background: #16a34a; color: #fff; text-decoration: none; font-weight: 700;
+  }
+  .aviso { font-size: 12px; color: #777; margin-top: 24px; line-height: 1.5; }
+  .linha { display: flex; gap: 10px; }
+  .linha > div { flex: 1; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="nav">
+      <a href="/">Baixador</a>
+      <a href="/editor">Editor</a>
+      <a href="/gerador" class="ativo">Gerador</a>
+      <a href="/config">Config</a>
+    </div>
+    <h1>Gerador IA</h1>
+    <p class="sub">Copies + imagens geradas por IA, no seu funil, alimentado pelos seus exemplos</p>
+
+    <h2>⚙️ Configuração</h2>
+
+    <div id="status-chave" class="campo" style="background:#1a1a1a; border:1px solid #262626; border-radius:10px; padding:12px 14px; font-size:13px;">
+      Verificando chave da API...
+    </div>
+
+    <div class="campo">
+      <label>Funil / nicho atual</label>
+      <input id="funil" type="text" placeholder="Ex: Chama gêmea, reconciliação amorosa" onchange="salvarConfig()" />
+    </div>
+
+    <h2>📌 Exemplos que estão convertendo</h2>
+    <p class="ajuda" style="margin-top:-6px; margin-bottom:12px;">
+      Cole aqui o texto de copies que estão funcionando bem (as suas ou de referência).
+      A IA vai se inspirar nesses exemplos — sem copiar — pra criar frases novas no mesmo estilo.
+    </p>
+
+    <div class="campo">
+      <textarea id="novo-exemplo" placeholder="Ex: A pessoa que você está pensando também está pensando em você..."></textarea>
+      <button class="secundario" style="margin-top:8px;" onclick="adicionarExemplo()">+ Adicionar exemplo</button>
+    </div>
+
+    <p class="ajuda" style="margin: 12px 0 6px;">Ou envia prints e a IA transcreve pra você:</p>
+    <div class="campo">
+      <input id="imagens-copy" type="file" accept="image/*" multiple
+             style="width:100%; padding:12px; border-radius:10px; border:1px dashed #333; background:#1a1a1a; color:#ccc; font-size:13px;" />
+    </div>
+    <button class="secundario" onclick="transcreverCopies()" id="btn-transcrever-copies">📝 Transcrever prints e adicionar</button>
+    <p id="status-transcricao" class="ajuda" style="margin-top:8px; margin-bottom:16px;"></p>
+
+    <div id="lista-exemplos"></div>
+
+    <h2>📸 Estilo visual personalizado</h2>
+    <p class="ajuda" style="margin-top:-6px; margin-bottom:12px;">
+      Sobe várias fotos de referência do estilo que você quer (mesa, mão, luz,
+      composição). A IA analisa o padrão visual — sem copiar texto ou marca
+      das imagens — e guarda um estilo reutilizável.
+    </p>
+
+    <div class="campo">
+      <input id="imagens-referencia" type="file" accept="image/*" multiple
+             style="width:100%; padding:12px; border-radius:10px; border:1px dashed #333; background:#1a1a1a; color:#ccc; font-size:13px;" />
+      <p class="ajuda">Até 10 imagens analisadas por vez (se enviar mais, usa as 10 primeiras).</p>
+    </div>
+
+    <button class="secundario" onclick="analisarEstilo()" id="btn-analisar-estilo">🔍 Analisar estilo com IA</button>
+    <p id="status-estilo" class="ajuda" style="margin-top:8px;"></p>
+    <div id="estilo-personalizado-status" class="ajuda" style="margin-top:6px; margin-bottom:20px;"></div>
+
+    <h2>🎨 Geração</h2>
+
+    <div class="campo">
+      <label>Estilo visual</label>
+      <select id="estilo">
+        <option value="foto_livro">Foto realista — mão segurando livro/celular</option>
+        <option value="ilustrado_cosmico">Ilustrado — cósmico/místico</option>
+        <option value="personalizado">Meu estilo (dos exemplos que enviei)</option>
+      </select>
+    </div>
+
+    <div class="linha campo">
+      <div>
+        <label>Quantas imagens</label>
+        <input id="quantidade" type="number" value="8" min="4" max="40" step="4" />
+      </div>
+    </div>
+    <p class="ajuda" style="margin-top:-10px;">Sempre em múltiplos de 4 (arredonda pra cima).</p>
+
+    <div class="campo" style="display:flex; align-items:center; gap:8px;">
+      <input id="gerar-reels" type="checkbox" style="width:auto;" />
+      <label style="margin-bottom:0;" for="gerar-reels">Também criar Reels (vídeo 6s + som ambiente)</label>
+    </div>
+
+    <button id="btn-gerar" onclick="gerar()">Gerar</button>
+
+    <button type="button" class="secundario" style="margin-top:10px;" onclick="verRecentes()">
+      🕓 Ver processamentos recentes (última hora)
+    </button>
+    <div id="lista-recentes" style="display:none; margin-top:12px;"></div>
+
+    <div id="status-box">
+      <div id="status-text">Preparando...</div>
+      <div class="bar-bg"><div id="bar-fill" class="bar-fill"></div></div>
+    </div>
+
+    <a id="download-link" href="#">Baixar ZIP com o resultado</a>
+
+    <p class="aviso">
+      Isso consome créditos da sua conta OpenAI (texto + imagem). Cada grupo de 4 imagens
+      = 1 chamada de imagem. Processamento pode levar alguns minutos no plano gratuito.
+      Conteúdo gerado é original — inspirado no estilo dos seus exemplos, não uma cópia deles.
+    </p>
+  </div>
+
+<script>
+let jobId = null;
+let poller = null;
+let exemplos = [];
+
+function carregarConfig() {
+  atualizarStatusChave();
+  document.getElementById('funil').value = localStorage.getItem('gerador_funil') || '';
+  exemplos = JSON.parse(localStorage.getItem('gerador_exemplos') || '[]');
+  renderizarExemplos();
+  atualizarStatusEstiloPersonalizado();
+}
+
+function atualizarStatusChave() {
+  const chave = localStorage.getItem('api_key_openai') || '';
+  const div = document.getElementById('status-chave');
+  if (chave) {
+    div.innerHTML = '✅ Chave OpenAI configurada — <a href="/config" style="color:#25f4ee;">trocar</a>';
+  } else {
+    div.innerHTML = '⚠️ Nenhuma chave configurada — <a href="/config" style="color:#ff2d55; font-weight:700;">configurar agora</a>';
+  }
+}
+
+async function analisarEstilo() {
+  const apiKey = localStorage.getItem('api_key_openai') || '';
+  const todasImagens = Array.from(document.getElementById('imagens-referencia').files);
+
+  if (!apiKey) { alert('Configura sua chave OpenAI na aba Config primeiro'); return; }
+  if (todasImagens.length === 0) { alert('Escolhe pelo menos 1 imagem de referência'); return; }
+
+  const LIMITE = 10;
+  const imagens = todasImagens.slice(0, LIMITE);
+  const cortou = todasImagens.length > LIMITE;
+
+  document.getElementById('btn-analisar-estilo').disabled = true;
+  document.getElementById('status-estilo').textContent = cortou
+    ? `Você escolheu ${todasImagens.length}, mas só as 10 primeiras são enviadas. Analisando...`
+    : 'Analisando estilo (pode levar 20-30s)...';
+
+  const formData = new FormData();
+  for (const img of imagens) formData.append('imagens', img);
+  formData.append('api_key', apiKey);
+
+  try {
+    const resp = await fetch('/api/gerador/analisar-estilo', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.erro) {
+      document.getElementById('status-estilo').textContent = 'Erro: ' + data.erro;
+    } else {
+      localStorage.setItem('estilo_personalizado_texto', data.descricao_estilo);
+      document.getElementById('status-estilo').textContent =
+        `✅ Estilo aprendido de ${data.imagens_analisadas} imagem(ns)! Selecione "Meu estilo" na lista abaixo.`;
+      atualizarStatusEstiloPersonalizado();
+    }
+  } catch (e) {
+    document.getElementById('status-estilo').textContent =
+      'Erro de conexão (rede instável ou upload muito pesado). Tenta com menos imagens ou numa conexão melhor.';
+  }
+  document.getElementById('btn-analisar-estilo').disabled = false;
+}
+
+function atualizarStatusEstiloPersonalizado() {
+  const texto = localStorage.getItem('estilo_personalizado_texto') || '';
+  const div = document.getElementById('estilo-personalizado-status');
+  if (texto) {
+    div.innerHTML = '📌 Estilo salvo: <span style="color:#888;">' + texto.slice(0, 140) + '...</span> ' +
+      '<a href="#" onclick="limparEstiloPersonalizado(); return false;" style="color:#ff2d55;">(limpar)</a>';
+  } else {
+    div.textContent = 'Nenhum estilo personalizado analisado ainda.';
+  }
+}
+
+function limparEstiloPersonalizado() {
+  localStorage.removeItem('estilo_personalizado_texto');
+  atualizarStatusEstiloPersonalizado();
+}
+
+function salvarConfig() {
+  localStorage.setItem('gerador_funil', document.getElementById('funil').value);
+}
+
+function adicionarExemplo() {
+  const texto = document.getElementById('novo-exemplo').value.trim();
+  if (!texto) return;
+  exemplos.push(texto);
+  localStorage.setItem('gerador_exemplos', JSON.stringify(exemplos));
+  document.getElementById('novo-exemplo').value = '';
+  renderizarExemplos();
+}
+
+async function transcreverCopies() {
+  const todasImagens = Array.from(document.getElementById('imagens-copy').files);
+
+  if (todasImagens.length === 0) { alert('Escolhe pelo menos 1 print'); return; }
+
+  const LIMITE = 10;
+  const imagens = todasImagens.slice(0, LIMITE);
+  const cortou = todasImagens.length > LIMITE;
+
+  document.getElementById('btn-transcrever-copies').disabled = true;
+  document.getElementById('status-transcricao').textContent = cortou
+    ? `Você escolheu ${todasImagens.length}, mas só os 10 primeiros são enviados. Lendo (OCR local, sem custo)...`
+    : 'Lendo os prints (OCR local, sem custo)...';
+
+  const formData = new FormData();
+  for (const img of imagens) formData.append('imagens', img);
+
+  try {
+    const resp = await fetch('/api/gerador/transcrever-copies', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.erro) {
+      document.getElementById('status-transcricao').textContent = 'Erro: ' + data.erro;
+    } else {
+      exemplos.push(...data.textos);
+      localStorage.setItem('gerador_exemplos', JSON.stringify(exemplos));
+      renderizarExemplos();
+      document.getElementById('status-transcricao').textContent =
+        `✅ ${data.textos.length} exemplo(s) transcrito(s) e adicionado(s) abaixo. Confere se saiu certinho — OCR pode errar em fontes estilizadas.`;
+      document.getElementById('imagens-copy').value = '';
+    }
+  } catch (e) {
+    document.getElementById('status-transcricao').textContent =
+      'Erro de conexão (rede instável ou upload muito pesado). Tenta com menos imagens ou numa conexão melhor.';
+  }
+  document.getElementById('btn-transcrever-copies').disabled = false;
+}
+
+function removerExemplo(i) {
+  exemplos.splice(i, 1);
+  localStorage.setItem('gerador_exemplos', JSON.stringify(exemplos));
+  renderizarExemplos();
+}
+
+function renderizarExemplos() {
+  const div = document.getElementById('lista-exemplos');
+  div.innerHTML = '';
+  exemplos.forEach((ex, i) => {
+    const item = document.createElement('div');
+    item.className = 'exemplo-item';
+    const p = document.createElement('div');
+    p.className = 'exemplo-texto';
+    p.textContent = ex;
+    const btn = document.createElement('button');
+    btn.className = 'exemplo-del';
+    btn.textContent = '✕';
+    btn.onclick = () => removerExemplo(i);
+    item.appendChild(p);
+    item.appendChild(btn);
+    div.appendChild(item);
+  });
+}
+
+async function gerar() {
+  const apiKey = localStorage.getItem('api_key_openai') || '';
+  const funil = document.getElementById('funil').value.trim();
+  const estilo = document.getElementById('estilo').value;
+  const estiloCustomizado = localStorage.getItem('estilo_personalizado_texto') || '';
+  const quantidade = document.getElementById('quantidade').value || 8;
+  const gerarReels = document.getElementById('gerar-reels').checked;
+
+  if (!apiKey) { alert('Configura sua chave da API OpenAI na aba Config primeiro'); return; }
+  if (!funil) { alert('Descreve o funil/nicho atual'); return; }
+  if (estilo === 'personalizado' && !estiloCustomizado) {
+    alert('Analisa um estilo personalizado primeiro (na seção acima) ou escolhe outro estilo');
+    return;
+  }
+
+  salvarConfig();
+
+  document.getElementById('btn-gerar').disabled = true;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('download-link').style.display = 'none';
+  document.getElementById('status-text').textContent = 'Gerando as frases...';
+  document.getElementById('bar-fill').style.width = '5%';
+
+  let resp;
+  try {
+    resp = await fetch('/api/gerador/iniciar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey, funil, exemplos, estilo, estilo_customizado: estiloCustomizado,
+        quantidade, gerar_reels: gerarReels,
+      })
+    });
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Erro de conexão. Tenta de novo.';
+    document.getElementById('btn-gerar').disabled = false;
+    return;
+  }
+  const data = await resp.json();
+
+  if (data.erro) {
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-gerar').disabled = false;
+    return;
+  }
+
+  jobId = data.job_id;
+  localStorage.setItem('gerador_job_ativo', jobId);
+  poller = setInterval(checarStatus, 3000);
+}
+
+async function checarStatus() {
+  let resp, data;
+  try {
+    resp = await fetch('/api/gerador/status/' + jobId);
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Conexão instável... tentando de novo (o processamento continua no servidor).';
+    return;
+  }
+
+  if (data.status === 'gerando_copies') {
+    document.getElementById('status-text').textContent = 'Criando as frases com IA...';
+    document.getElementById('bar-fill').style.width = '15%';
+  } else if (data.status === 'gerando_imagens') {
+    document.getElementById('status-text').textContent = `Gerando imagens... (${data.concluidos}/${data.total})`;
+    const pct = Math.min(85, 20 + (data.concluidos / Math.max(data.total,1)) * 50);
+    document.getElementById('bar-fill').style.width = pct + '%';
+  } else if (data.status === 'gerando_reels') {
+    document.getElementById('status-text').textContent = `Animando reels... (${data.concluidos_reels || 0}/${data.total})`;
+    document.getElementById('bar-fill').style.width = '90%';
+  } else if (data.status === 'concluido') {
+    clearInterval(poller);
+    localStorage.removeItem('gerador_job_ativo');
+    const totalTexto = data.total != null ? `${data.total} imagem(ns) geradas` : 'imagens prontas';
+    document.getElementById('status-text').textContent = `Pronto! ${totalTexto}.`;
+    document.getElementById('bar-fill').style.width = '100%';
+    const link = document.getElementById('download-link');
+    link.href = '/api/gerador/baixar/' + jobId;
+    link.style.display = 'block';
+    document.getElementById('btn-gerar').disabled = false;
+  } else if (data.status === 'erro') {
+    clearInterval(poller);
+    localStorage.removeItem('gerador_job_ativo');
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-gerar').disabled = false;
+  }
+}
+
+async function verRecentes() {
+  const div = document.getElementById('lista-recentes');
+  div.style.display = 'block';
+  div.innerHTML = '<p class="ajuda">Buscando...</p>';
+
+  const resp = await fetch('/api/gerador/recentes');
+  const data = await resp.json();
+
+  if (!data.jobs || data.jobs.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhum processamento na última hora.</p>';
+    return;
+  }
+
+  div.innerHTML = '';
+  data.jobs.forEach(j => {
+    const item = document.createElement('div');
+    item.className = 'job-recente';
+    let statusTexto = '';
+    if (j.status === 'concluido' && j.recuperado_do_disco) statusTexto = '✅ Pronto (recuperado do disco)';
+    else if (j.status === 'concluido') statusTexto = `✅ Pronto — ${j.total ?? '?'} imagem(ns)`;
+    else if (j.status === 'erro') statusTexto = '❌ Erro';
+    else statusTexto = '⏳ Processando';
+
+    item.innerHTML = `
+      <div>${statusTexto} — há ${j.minutos_atras} min</div>
+      <div style="color:#666; font-size:11px;">ID: ${j.job_id}</div>
+      ${j.status === 'concluido' ? `<a href="/api/gerador/baixar/${j.job_id}">⬇ Baixar ZIP</a>` : ''}
+    `;
+    div.appendChild(item);
+  });
+}
+
+// Retoma automaticamente um processamento que ficou rodando em segundo
+// plano no servidor (ex: você desligou o celular ou saiu do app).
+(function retomarJobAtivo() {
+  const jobSalvo = localStorage.getItem('gerador_job_ativo');
+  if (!jobSalvo) return;
+  jobId = jobSalvo;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('status-text').textContent = 'Retomando processamento anterior...';
+  document.getElementById('btn-gerar').disabled = true;
+  poller = setInterval(checarStatus, 3000);
+  checarStatus();
+})();
+
+carregarConfig();
+</script>
+</body>
+</html>
+"""
+
+PAGINA_CONFIG_HTML = """
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Configurações</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#0f0f0f">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Roboto, Arial, sans-serif;
+    background: #0f0f0f;
+    color: #f5f5f5;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px 60px;
+    min-height: 100vh;
+  }
+  .card { width: 100%; max-width: 420px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #a0a0a0; font-size: 14px; margin-top: 0; margin-bottom: 24px; }
+  .nav { display: flex; gap: 8px; margin-bottom: 20px; }
+  .nav a {
+    flex: 1; text-align: center; padding: 10px; border-radius: 8px;
+    text-decoration: none; font-size: 13px; font-weight: 600; color: #888;
+    background: #1a1a1a; border: 1px solid #262626;
+  }
+  .nav a.ativo { color: #000; background: linear-gradient(135deg, #ff2d55, #25f4ee); border: none; }
+  .servico {
+    background: #1a1a1a; border: 1px solid #262626; border-radius: 12px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .servico-titulo { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-weight: 700; font-size: 15px; }
+  .servico-desc { font-size: 12px; color: #888; margin-bottom: 12px; line-height: 1.4; }
+  label { font-size: 13px; color: #ccc; display: block; margin-bottom: 6px; font-weight: 600; }
+  input[type="password"], input[type="text"] {
+    width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #333;
+    background: #0f0f0f; color: #fff; font-size: 15px; font-family: inherit;
+  }
+  .status-badge {
+    display: inline-block; font-size: 11px; font-weight: 700; padding: 3px 10px;
+    border-radius: 20px; margin-left: 6px;
+  }
+  .badge-ok { background: #16a34a33; color: #4ade80; }
+  .badge-vazio { background: #ff2d5533; color: #ff6b8a; }
+  .ajuda { font-size: 11px; color: #666; margin-top: 6px; line-height: 1.4; }
+  .ajuda a { color: #25f4ee; }
+  button.salvar {
+    width: 100%; padding: 12px; border-radius: 10px; border: none; margin-top: 10px;
+    background: linear-gradient(135deg, #ff2d55, #25f4ee); color: #000; font-weight: 700; font-size: 14px; cursor: pointer;
+  }
+  .toast {
+    display: none; position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #16a34a; color: white; padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: 600;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="nav">
+      <a href="/">Baixador</a>
+      <a href="/editor">Editor</a>
+      <a href="/gerador">Gerador</a>
+      <a href="/config" class="ativo">Config</a>
+    </div>
+    <h1>Configurações</h1>
+    <p class="sub">Suas chaves de API, usadas por todas as ferramentas do app</p>
+
+    <div class="servico">
+      <div class="servico-titulo">
+        🤖 OpenAI <span id="badge-openai" class="status-badge badge-vazio">não configurada</span>
+      </div>
+      <div class="servico-desc">
+        Usada no Gerador IA (copies + imagens) e no Auto-editor (legenda automática por transcrição).
+      </div>
+      <label>Chave da API</label>
+      <input id="chave-openai" type="password" placeholder="sk-..." />
+      <p class="ajuda">Pega a sua em <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a></p>
+      <button class="salvar" onclick="salvar('openai')">Salvar</button>
+    </div>
+
+    <div class="servico">
+      <div class="servico-titulo">
+        🎵 ElevenLabs <span id="badge-elevenlabs" class="status-badge badge-vazio">não configurada</span>
+      </div>
+      <div class="servico-desc">
+        Reservada pra quando ativarmos música de meditação gerada por IA de verdade (hoje o app usa som ambiente sintetizado, sem precisar dessa chave).
+      </div>
+      <label>Chave da API</label>
+      <input id="chave-elevenlabs" type="password" placeholder="Sua chave da ElevenLabs" />
+      <p class="ajuda">Pega a sua em <a href="https://elevenlabs.io" target="_blank">elevenlabs.io</a></p>
+      <button class="salvar" onclick="salvar('elevenlabs')">Salvar</button>
+    </div>
+
+    <p class="ajuda" style="margin-top:20px;">
+      As chaves ficam salvas só no seu navegador (localStorage), nunca no servidor.
+      Se trocar de celular ou limpar os dados do navegador, precisa cadastrar de novo.
+    </p>
+  </div>
+
+  <div id="toast" class="toast">Chave salva ✓</div>
+
+<script>
+function carregarStatus() {
+  ['openai', 'elevenlabs'].forEach(servico => {
+    const chave = localStorage.getItem('api_key_' + servico) || '';
+    document.getElementById('chave-' + servico).value = chave;
+    const badge = document.getElementById('badge-' + servico);
+    if (chave) {
+      badge.textContent = 'configurada';
+      badge.className = 'status-badge badge-ok';
+    } else {
+      badge.textContent = 'não configurada';
+      badge.className = 'status-badge badge-vazio';
+    }
+  });
+}
+
+function salvar(servico) {
+  const valor = document.getElementById('chave-' + servico).value.trim();
+  localStorage.setItem('api_key_' + servico, valor);
+  carregarStatus();
+  const toast = document.getElementById('toast');
+  toast.style.display = 'block';
+  setTimeout(() => { toast.style.display = 'none'; }, 2000);
+}
+
+carregarStatus();
+</script>
+</body>
+</html>
+"""
+
+# ---------------------------------------------------------
+# Configurações
+# ---------------------------------------------------------
+BASE_TMP = Path(tempfile.gettempdir()) / "tiktok_jobs"
+BASE_TMP.mkdir(exist_ok=True)
+
+# Guarda o status de cada job em memória (id -> dict)
+JOBS = {}
+
+# Limite de segurança padrão (o usuário pode aumentar na tela, até o teto abaixo)
+LIMITE_PADRAO = 30
+LIMITE_MAXIMO = 200  # teto de segurança pra não travar o servidor gratuito
+
+
+def normalizar_url(entrada: str) -> str:
+    entrada = entrada.strip()
+    if entrada.startswith("http"):
+        return entrada
+    # Sem "http", assume que é @usuario do TikTok (Instagram/Facebook sempre
+    # precisam vir como link completo, colado direto do app).
+    usuario = entrada.lstrip("@")
+    return f"https://www.tiktok.com/@{usuario}"
+
+
+def eh_video_unico(url: str) -> bool:
+    """Detecta se o link é de um único vídeo/post (não perfil/conta inteira)."""
+    padroes = [
+        r"/video/\d+",           # TikTok
+        r"vm\.tiktok\.com",
+        r"vt\.tiktok\.com",
+        r"instagram\.com/(reel|p|tv)/",   # Instagram: reels, posts, IGTV

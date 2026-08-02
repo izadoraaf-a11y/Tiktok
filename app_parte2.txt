@@ -1,0 +1,1273 @@
+        r"facebook\.com/.+/videos/",      # Facebook: vídeo em página/perfil
+        r"facebook\.com/watch/?\?v=",     # Facebook: watch?v=
+        r"facebook\.com/reel/",           # Facebook reels
+        r"fb\.watch/",                    # Facebook link curto
+    ]
+    return any(re.search(p, url) for p in padroes)
+
+
+# ---------------------------------------------------------
+# Auto-editor: filtro de brilho + CTA no final, em lote
+# ---------------------------------------------------------
+EDITOR_BASE_TMP = Path(tempfile.gettempdir()) / "editor_jobs"
+EDITOR_BASE_TMP.mkdir(exist_ok=True)
+EDITOR_JOBS = {}
+MAX_VIDEOS_EDITOR = 15
+MAX_TAMANHO_VIDEO_MB = 150
+FONTE_PADRAO = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONTE_SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
+
+# Modelos visuais de legenda: cada um define posição, cor e fundo.
+# {w}/{h}/{th} são substituídos pelos valores reais do vídeo em tempo de execução.
+MODELOS_LEGENDA = {
+    "classico": "fontcolor=white:fontsize=h/22:box=1:boxcolor=black@0.55:boxborderw=10:x=(w-text_w)/2:y=h-th-40",
+    "impacto": "fontcolor=yellow:fontsize=h/18:box=1:boxcolor=black@0.7:boxborderw=14:x=(w-text_w)/2:y=50",
+    "neon": "fontcolor=#25f4ee:fontsize=h/20:borderw=3:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2",
+    "minimalista": "fontcolor=white@0.9:fontsize=h/28:box=1:boxcolor=black@0.35:boxborderw=6:x=30:y=h-th-30",
+}
+
+# Modelo "citação": faixa colorida full-width com texto serifado centralizado.
+# Diferente dos outros, precisa de um filtro extra (drawbox) antes do drawtext,
+# por isso é tratado separado dos demais no processar_video_com_cta.
+# IMPORTANTE: drawbox usa as variáveis ih/iw (altura/largura de entrada),
+# já o drawtext usa h/w — são filtros diferentes com convenções diferentes.
+FAIXA_Y_INICIO_BOX = "ih*0.42"     # usado no drawbox
+FAIXA_ALTURA_BOX = "ih*0.18"       # usado no drawbox
+FAIXA_Y_INICIO_TXT = "h*0.42"      # usado no drawtext
+FAIXA_ALTURA_TXT = "h*0.18"        # usado no drawtext
+CORES_FAIXA_CITACAO = {
+    "branco": ("white@1", "black"),
+    "preto": ("black@1", "white"),
+    "vermelho": ("0xD62828@1", "white"),
+}
+
+
+LIMITE_DIMENSAO_VIDEO = 1920  # baixa a resolução se passar disso, pra processar mais rápido
+
+
+def probe_video(path: str):
+    """Retorna (largura, altura, fps, tem_audio) de um vídeo via ffprobe."""
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0",
+           "-show_entries", "stream=width,height,r_frame_rate",
+           "-of", "json", path]
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    info = json.loads(out.stdout)["streams"][0]
+    w, h = info["width"], info["height"]
+    num, den = info["r_frame_rate"].split("/")
+    fps = float(num) / float(den) if float(den) != 0 else 30.0
+
+    cmd_audio = ["ffprobe", "-v", "error", "-select_streams", "a",
+                 "-show_entries", "stream=index", "-of", "csv=p=0", path]
+    out_audio = subprocess.run(cmd_audio, capture_output=True, text=True, timeout=30)
+    tem_audio = bool(out_audio.stdout.strip())
+
+    # Reduz vídeos muito grandes (ex: 4K de celular) — acelera bastante o
+    # processamento, já que menos pixels = menos trabalho em todo o pipeline.
+    maior_lado = max(w, h)
+    if maior_lado > LIMITE_DIMENSAO_VIDEO:
+        fator = LIMITE_DIMENSAO_VIDEO / maior_lado
+        w = int(w * fator) // 2 * 2   # precisa ser par pro codec h264
+        h = int(h * fator) // 2 * 2
+
+    return w, h, fps, tem_audio
+
+
+def extrair_audio_para_transcricao(input_path: str, saida_path: str):
+    """Extrai só o áudio (comprimido, mono) pra mandar pra API — bem menor
+    que o vídeo inteiro, o que acelera o upload e evita o limite de 25MB."""
+    cmd = ["ffmpeg", "-y", "-i", input_path, "-vn", "-ac", "1", "-ar", "16000",
+           "-b:a", "64k", saida_path]
+    subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+
+
+def transcrever_segmentos(api_key: str, input_path: str, pasta_trabalho: Path,
+                           max_duracao_segmento: float = 4.0) -> list:
+    """Transcreve o áudio do vídeo via Whisper (OpenAI) e devolve uma lista
+    de segmentos [{start, end, text}], já quebrados em pedaços curtos (estilo
+    legenda de Reels/TikTok) mesmo quando a fala original vem em frases longas."""
+    audio_path = pasta_trabalho / "audio_transcricao.mp3"
+    extrair_audio_para_transcricao(input_path, str(audio_path))
+
+    with open(audio_path, "rb") as f:
+        resp = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            files={"file": (audio_path.name, f, "audio/mpeg")},
+            data={"model": "whisper-1", "response_format": "verbose_json"},
+            timeout=180,
+        )
+    resp.raise_for_status()
+    dados = resp.json()
+
+    segmentos = []
+    for seg in dados.get("segments", []):
+        inicio, fim = seg["start"], seg["end"]
+        texto = seg["text"].strip()
+        if not texto:
+            continue
+        duracao_seg = fim - inicio
+
+        if duracao_seg > max_duracao_segmento:
+            # Quebra frases longas em pedaços menores, dividindo o tempo
+            # proporcionalmente pelo número de palavras de cada pedaço.
+            palavras = texto.split()
+            n_partes = max(2, int(duracao_seg // max_duracao_segmento) + 1)
+            tam_parte = max(1, len(palavras) // n_partes)
+            for i in range(0, len(palavras), tam_parte):
+                bloco = palavras[i:i + tam_parte]
+                if not bloco:
+                    continue
+                frac_ini = i / len(palavras)
+                frac_fim = min(1.0, (i + tam_parte) / len(palavras))
+                segmentos.append({
+                    "start": inicio + frac_ini * duracao_seg,
+                    "end": inicio + frac_fim * duracao_seg,
+                    "text": " ".join(bloco),
+                })
+        else:
+            segmentos.append({"start": inicio, "end": fim, "text": texto})
+
+    return segmentos
+
+
+def _filtro_segmento_texto(idx: int, label_entrada: str, label_saida: str, txt_path: Path,
+                            modelo: str, cor_fundo_citacao: str,
+                            inicio: float = None, fim: float = None) -> str:
+    """Monta o pedaço do filtro ffmpeg pra desenhar UM trecho de texto,
+    opcionalmente só visível entre 'inicio' e 'fim' segundos (pra legenda
+    automática sincronizada com a fala)."""
+    enable_clause = f":enable='between(t,{inicio:.2f},{fim:.2f})'" if inicio is not None else ""
+
+    if modelo == "citacao":
+        cor_fundo, cor_texto = CORES_FAIXA_CITACAO.get(cor_fundo_citacao, CORES_FAIXA_CITACAO["branco"])
+        return (
+            f"[{label_entrada}]drawbox=x=0:y={FAIXA_Y_INICIO_BOX}:w=iw:h={FAIXA_ALTURA_BOX}:"
+            f"color={cor_fundo}:t=fill{enable_clause}[vb{idx}]"
+            f";[vb{idx}]drawtext=fontfile={FONTE_SERIF}:textfile={txt_path}:"
+            f"fontcolor={cor_texto}:fontsize=h/24:line_spacing=8:"
+            f"x=(w-text_w)/2:y=({FAIXA_Y_INICIO_TXT})+({FAIXA_ALTURA_TXT}-text_h)/2{enable_clause}[{label_saida}]"
+        )
+    estilo = MODELOS_LEGENDA.get(modelo, MODELOS_LEGENDA["classico"])
+    return (
+        f"[{label_entrada}]drawtext=fontfile={FONTE_PADRAO}:textfile={txt_path}:"
+        f"{estilo}{enable_clause}[{label_saida}]"
+    )
+
+
+def construir_filtro_legenda(pasta_trabalho: Path, legenda_modelo: str, cor_fundo_citacao: str,
+                              label_inicial: str, texto_manual: str = "", segmentos: list = None):
+    """Monta a cadeia de filtros de legenda: um drawtext por segmento (modo
+    automático, sincronizado no tempo) ou um único drawtext fixo (modo manual)."""
+    partes = []
+    label_atual = label_inicial
+
+    if segmentos:
+        for i, seg in enumerate(segmentos):
+            txt_path = pasta_trabalho / f"legenda_{i}.txt"
+            txt_path.write_text(seg["text"], encoding="utf-8")
+            label_saida = f"vtxt{i}"
+            partes.append(_filtro_segmento_texto(
+                i, label_atual, label_saida, txt_path, legenda_modelo, cor_fundo_citacao,
+                seg["start"], seg["end"],
+            ))
+            label_atual = label_saida
+    elif texto_manual:
+        txt_path = pasta_trabalho / "legenda.txt"
+        txt_path.write_text(texto_manual, encoding="utf-8")
+        label_saida = "vtxtM"
+        partes.append(_filtro_segmento_texto(
+            0, label_atual, label_saida, txt_path, legenda_modelo, cor_fundo_citacao,
+        ))
+        label_atual = label_saida
+
+    return ";".join(partes), label_atual
+
+
+def processar_video_com_cta(input_path: str, cta_path: str, brilho: float,
+                             duracao: float, output_path: str,
+                             legenda_texto: str = "", legenda_modelo: str = "classico",
+                             cor_fundo_citacao: str = "branco",
+                             legenda_segmentos: list = None,
+                             pasta_trabalho: Path = None):
+    """Aplica filtro de brilho, legenda opcional (manual ou por segmentos
+    sincronizados), e cola a imagem de CTA no final."""
+    w, h, fps, tem_audio = probe_video(input_path)
+
+    # Se o vídeo original é maior que o limite, redimensiona antes de tudo —
+    # isso é o que mais acelera o processamento (menos pixels em cada filtro).
+    filtro_video = f"[0:v]scale={w}:{h}[v0scaled];[v0scaled]eq=brightness={brilho}[v0eq]"
+    label_apos_brilho = "v0eq"
+
+    if legenda_segmentos or legenda_texto:
+        pedacos, label_apos_brilho = construir_filtro_legenda(
+            pasta_trabalho, legenda_modelo, cor_fundo_citacao,
+            label_inicial="v0eq", texto_manual=legenda_texto, segmentos=legenda_segmentos,
+        )
+        filtro_video += ";" + pedacos
+
+    filtro = (
+        f"{filtro_video};"
+        f"[1:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}[v1];"
+        f"[{label_apos_brilho}][v1]concat=n=2:v=1:a=0[outv]"
+    )
+
+    cmd = ["ffmpeg", "-y", "-i", input_path, "-loop", "1", "-t", str(duracao), "-i", cta_path]
+
+    # "ultrafast" prioriza velocidade — importante no plano gratuito (CPU
+    # bem limitada). O ganho de qualidade de presets mais lentos não compensa
+    # o tempo extra aqui.
+    if tem_audio:
+        filtro += f";[0:a]apad=pad_dur={duracao}[outa]"
+        cmd += ["-filter_complex", filtro, "-map", "[outv]", "-map", "[outa]",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-c:a", "aac"]
+    else:
+        cmd += ["-filter_complex", filtro, "-map", "[outv]",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
+
+    cmd += ["-movflags", "+faststart", output_path]
+
+    resultado = subprocess.run(cmd, capture_output=True, text=True, timeout=280)
+    if resultado.returncode != 0:
+        raise RuntimeError(resultado.stderr[-800:])
+
+
+# Quantos vídeos processar ao mesmo tempo. No plano Free/Starter (menos de
+# 1 CPU inteiro) o ganho é pequeno — vem principalmente das partes que
+# esperam rede/disco (upload, chamada da API de transcrição), não do
+# processamento de vídeo em si. A partir do plano Standard (1 CPU+) o ganho
+# fica bem mais real. Ajuste esse número conforme o plano do Render.
+EDITOR_WORKERS_PARALELOS = 2
+
+
+def _processar_um_video(v: Path, pasta_saida: Path, cta_path: str, brilho: float,
+                         duracao: float, legenda_texto: str, legenda_modelo: str,
+                         cor_fundo_citacao: str, modo_legenda: str, api_key: str,
+                         job: dict, lock: threading.Lock):
+    """Processa 1 vídeo isoladamente — cada vídeo ganha sua própria pasta de
+    trabalho temporária, pra não colidir com os outros rodando em paralelo."""
+    pasta_temp_video = pasta_saida.parent / f"tmp_{v.stem}"
+    pasta_temp_video.mkdir(exist_ok=True)
+
+    try:
+        legenda_segmentos = None
+        texto_para_video = legenda_texto
+
+        if modo_legenda == "automatica" and legenda_texto == "__AUTO__":
+            with lock:
+                job["arquivo_atual"] = f"transcrevendo {v.name}"
+            legenda_segmentos = transcrever_segmentos(api_key, str(v), pasta_temp_video)
+            texto_para_video = ""  # usa os segmentos, não texto fixo
+
+        saida = pasta_saida / f"editado_{v.stem}.mp4"
+        processar_video_com_cta(
+            str(v), cta_path, brilho, duracao, str(saida),
+            legenda_texto=texto_para_video, legenda_modelo=legenda_modelo,
+            cor_fundo_citacao=cor_fundo_citacao, legenda_segmentos=legenda_segmentos,
+            pasta_trabalho=pasta_temp_video,
+        )
+        with lock:
+            job["concluidos"] += 1
+        return ("ok", saida, None)
+    except Exception as e:
+        return ("erro", v.name, str(e))
+    finally:
+        shutil.rmtree(pasta_temp_video, ignore_errors=True)
+
+
+def editor_job_worker(job_id: str, pasta_videos: Path, cta_path: str, brilho: float,
+                       duracao: float, legenda_texto: str, legenda_modelo: str,
+                       cor_fundo_citacao: str, modo_legenda: str, api_key: str):
+    job = EDITOR_JOBS[job_id]
+    pasta_saida = pasta_videos / "saida"
+    pasta_saida.mkdir(exist_ok=True)
+
+    videos = sorted(pasta_videos.glob("video_*"))
+    job["total"] = len(videos)
+    job["status"] = "processando"
+
+    processados = []
+    erros = []
+    lock = threading.Lock()
+
+    with ThreadPoolExecutor(max_workers=EDITOR_WORKERS_PARALELOS) as executor:
+        futuros = [
+            executor.submit(
+                _processar_um_video, v, pasta_saida, cta_path, brilho, duracao,
+                legenda_texto, legenda_modelo, cor_fundo_citacao, modo_legenda,
+                api_key, job, lock,
+            )
+            for v in videos
+        ]
+        for futuro in as_completed(futuros):
+            status, resultado, detalhe = futuro.result()
+            if status == "ok":
+                processados.append(resultado)
+            else:
+                erros.append(f"{resultado}: {detalhe}")
+
+    if not processados:
+        job["status"] = "erro"
+        job["erro"] = "Nenhum vídeo processado com sucesso. " + (erros[0] if erros else "")
+        shutil.rmtree(pasta_videos, ignore_errors=True)
+        return
+
+    zip_path = EDITOR_BASE_TMP / f"{job_id}.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in processados:
+            zf.write(f, arcname=f.name)
+
+    job["status"] = "concluido"
+    job["zip_path"] = str(zip_path)
+    job["total"] = len(processados)
+    job["criado_em"] = time.time()
+
+    shutil.rmtree(pasta_videos, ignore_errors=True)
+
+
+# ---------------------------------------------------------
+# Gerador IA: copies + imagens via OpenAI, cortadas em 9:16,
+# com opção de virar reels animados com som ambiente
+# ---------------------------------------------------------
+GERADOR_BASE_TMP = Path(tempfile.gettempdir()) / "gerador_jobs"
+GERADOR_BASE_TMP.mkdir(exist_ok=True)
+GERADOR_JOBS = {}
+MAX_IMAGENS_GERADOR = 40
+
+PROMPTS_ESTILO = {
+    "foto_livro": (
+        "A realistic photo of a hand holding an open book, warm natural sunlight, "
+        "shadows of leaves across the page, cozy aesthetic desk or balcony background, "
+        "no text or letters anywhere in the image, empty blank page, photorealistic"
+    ),
+    "ilustrado_cosmico": (
+        "A dreamy illustrated cosmic night sky scene, galaxy, stars, soft silhouette "
+        "of a person looking at the stars, purple and pink nebula colors, no text or "
+        "letters anywhere in the image, digital painting style"
+    ),
+}
+
+MAX_IMAGENS_ANALISE_ESTILO = 10  # cap de imagens analisadas por chamada (custo/tamanho da requisição)
+
+
+def analisar_estilo_visual(api_key: str, imagens_bytes: list) -> str:
+    """Manda as imagens de referência do usuário pro GPT-4o (visão) e pede
+    uma descrição REUTILIZÁVEL do padrão visual/fotográfico — explicitamente
+    sem reproduzir texto, marca ou logotipo específico das imagens originais,
+    só o estilo (composição, luz, materiais, enquadramento)."""
+    conteudo = [{
+        "type": "text",
+        "text": (
+            "Estas são referências visuais de um usuário para um projeto de conteúdo "
+            "próprio. Descreva em inglês, em um parágrafo denso e reutilizável como "
+            "prompt de geração de imagem, SOMENTE o padrão visual/fotográfico "
+            "recorrente entre elas: composição, ângulo, iluminação, materiais de "
+            "fundo (mesa, tecido, varanda etc.), paleta de cores, textura, e o "
+            "estilo de eventual ilustração de linha (se houver).\n\n"
+            "IMPORTANTE: não mencione, descreva ou tente reproduzir nenhum texto "
+            "específico escrito nas imagens, nem nomes de marca, logotipos ou selos "
+            "visíveis — ignore completamente esses elementos. A descrição final deve "
+            "terminar deixando claro que a cena gerada não deve ter nenhum texto, "
+            "letra ou logotipo, só o cenário/composição vazio pronto pra receber "
+            "texto por cima depois."
+        ),
+    }]
+    for img in imagens_bytes[:MAX_IMAGENS_ANALISE_ESTILO]:
+        b64 = base64.b64encode(img).decode()
+        conteudo.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+        })
+
+    resp = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": conteudo}],
+            "max_tokens": 500,
+        },
+        timeout=90,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+MAX_IMAGENS_TRANSCRICAO_COPY = 10
+
+
+def transcrever_copies_de_imagens(imagens_bytes: list) -> list:
+    """Lê o texto de cada print via OCR local (Tesseract) — de graça, sem
+    chamar nenhuma API paga. Faz uma limpeza básica no texto extraído,
+    já que OCR de print de rede social pode pegar ruído (curtidas, ícones)."""
+    textos = []
+    for img_bytes in imagens_bytes[:MAX_IMAGENS_TRANSCRICAO_COPY]:
+        try:
+            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            texto_bruto = pytesseract.image_to_string(img, lang="eng+por")
+        except Exception:
+            continue
+
+        # Limpeza básica: remove linhas muito curtas/isoladas (comuns em
+        # ruído de interface: números de likes, hora, ícones mal lidos)
+        linhas = [l.strip() for l in texto_bruto.split("\n")]
+        linhas_uteis = [l for l in linhas if len(l) > 3]
+        texto_limpo = " ".join(linhas_uteis).strip()
+
+        if texto_limpo:
+            textos.append(texto_limpo)
+
+    return textos
+
+
+
+def chamar_openai_copies(api_key: str, funil: str, exemplos: list, quantidade: int) -> list:
+    """Pede pra OpenAI gerar N copies (título/apoio/cta) originais, inspiradas
+    no funil e nos exemplos de referência fornecidos pelo usuário."""
+    exemplos_txt = "\n".join(f"- {e}" for e in exemplos[:15]) if exemplos else "(nenhum exemplo fornecido ainda)"
+
+    prompt_sistema = (
+        "Você é um copywriter especialista em conteúdo viral para Instagram/Facebook "
+        "no nicho de conteúdo espiritual/motivacional/relacionamentos. Sua tarefa é criar "
+        "frases curtas, originais e emocionalmente impactantes — nunca copie os exemplos "
+        "literalmente, apenas se inspire no tom, estrutura e nível de impacto deles."
+    )
+    prompt_usuario = (
+        f"Funil/nicho atual: {funil}\n\n"
+        f"Exemplos de copies que estão convertendo bem nesse nicho:\n{exemplos_txt}\n\n"
+        f"Crie {quantidade} copies ORIGINAIS e diferentes entre si, no mesmo espírito "
+        f"emocional dos exemplos. Cada copy deve ter:\n"
+        f"- titulo: frase principal, curta e impactante (máx 8 palavras)\n"
+        f"- apoio: uma segunda frase complementar (máx 12 palavras)\n"
+        f"- cta: uma chamada pra ação curta, ex: 'leia o primeiro comentário'\n\n"
+        f'Responda SOMENTE em JSON válido, no formato: '
+        f'{{"copies": [{{"titulo": "...", "apoio": "...", "cta": "..."}}]}}'
+    )
+
+    resp = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": prompt_sistema},
+                {"role": "user", "content": prompt_usuario},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.9,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    conteudo = resp.json()["choices"][0]["message"]["content"]
+    dados = json.loads(conteudo)
+    return dados.get("copies", [])
+
+
+def chamar_openai_imagem_grade(api_key: str, estilo: str, estilo_customizado: str = "") -> Image.Image:
+    """Pede pra OpenAI gerar 1 imagem retrato dividida em grade 2x2 (4 cenas
+    diferentes, sem texto), pra depois cortar em 4 imagens 9:16 separadas."""
+    if estilo == "personalizado" and estilo_customizado:
+        base_prompt = estilo_customizado
+    else:
+        base_prompt = PROMPTS_ESTILO.get(estilo, PROMPTS_ESTILO["foto_livro"])
+    prompt = (
+        f"A single image split into an even 2x2 grid by a thin visible white "
+        f"dividing line (2 columns, 2 rows). Each of the 4 quadrants shows a "
+        f"different variation of this scene: {base_prompt}. "
+        f"Absolutely no text, letters, numbers or writing anywhere in the image."
+    )
+
+    resp = requests.post(
+        "https://api.openai.com/v1/images/generations",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-image-1",
+            "prompt": prompt,
+            "size": "1024x1536",
+            "n": 1,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    dados = resp.json()["data"][0]
+
+    if "b64_json" in dados and dados["b64_json"]:
+        img_bytes = base64.b64decode(dados["b64_json"])
+    else:
+        img_resp = requests.get(dados["url"], timeout=60)
+        img_resp.raise_for_status()
+        img_bytes = img_resp.content
+
+    return Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+
+def cortar_grade_em_quatro(img: Image.Image) -> list:
+    """Corta uma imagem 1024x1536 (grade 2x2) em 4 imagens 9:16 (1080x1920)."""
+    w, h = img.size
+    qw, qh = w // 2, h // 2
+
+    quadrantes = []
+    for i in range(4):
+        x = (i % 2) * qw
+        y = (i // 2) * qh
+        quad = img.crop((x, y, x + qw, y + qh))
+        largura_alvo = int(qh * 9 / 16)
+        offset_x = max(0, (qw - largura_alvo) // 2)
+        quad_916 = quad.crop((offset_x, 0, offset_x + largura_alvo, qh))
+        quad_final = quad_916.resize((1080, 1920), Image.LANCZOS)
+        quadrantes.append(quad_final)
+    return quadrantes
+
+
+def _quebrar_texto(draw, texto, fonte, largura_max):
+    palavras = texto.split()
+    linhas, linha_atual = [], ""
+    for palavra in palavras:
+        teste = (linha_atual + " " + palavra).strip()
+        bbox = draw.textbbox((0, 0), teste, font=fonte)
+        if bbox[2] - bbox[0] <= largura_max:
+            linha_atual = teste
+        else:
+            if linha_atual:
+                linhas.append(linha_atual)
+            linha_atual = palavra
+    if linha_atual:
+        linhas.append(linha_atual)
+    return linhas
+
+
+def aplicar_texto_quote(img: Image.Image, titulo: str, apoio: str, cta: str,
+                         cor_destaque=(255, 45, 85)) -> Image.Image:
+    """Sobrepõe título + apoio (topo) e CTA (base) na imagem, com gradientes
+    escuros por trás pra garantir legibilidade em qualquer fundo."""
+    img = img.convert("RGBA")
+    w, h = img.size
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    for y in range(int(h * 0.42)):
+        alpha = int(190 * (1 - y / (h * 0.42)) ** 0.6)
+        draw.line([(0, y), (w, y)], fill=(0, 0, 0, alpha))
+
+    faixa_baixo = int(h * 0.20)
+    for y in range(faixa_baixo):
+        yy = h - faixa_baixo + y
+        alpha = int(200 * (y / faixa_baixo) ** 0.6)
+        draw.line([(0, yy), (w, yy)], fill=(0, 0, 0, alpha))
+
+    fonte_titulo = ImageFont.truetype(FONTE_SERIF, 58)
+    fonte_apoio = ImageFont.truetype(FONTE_SERIF, 34)
+    fonte_cta = ImageFont.truetype(FONTE_PADRAO, 36)
+
+    margem = 70
+    y_cursor = 90
+
+    for linha in _quebrar_texto(draw, titulo, fonte_titulo, w - margem * 2):
+        draw.text((w / 2, y_cursor), linha, font=fonte_titulo, fill=(255, 255, 255, 255), anchor="ma")
+        bbox = draw.textbbox((0, 0), linha, font=fonte_titulo)
+        y_cursor += (bbox[3] - bbox[1]) + 14
+
+    if apoio:
+        y_cursor += 16
+        for linha in _quebrar_texto(draw, apoio, fonte_apoio, w - margem * 2):
+            draw.text((w / 2, y_cursor), linha, font=fonte_apoio, fill=(230, 230, 230, 255), anchor="ma")
+            bbox = draw.textbbox((0, 0), linha, font=fonte_apoio)
+            y_cursor += (bbox[3] - bbox[1]) + 10
+
+    if cta:
+        texto_cta = cta.upper()
+        y_cta = h - 130
+        draw.text((w / 2, y_cta), texto_cta, font=fonte_cta, fill=cor_destaque + (255,), anchor="ma")
+        draw.text((w / 2, y_cta + 55), "\U0001F447", font=fonte_cta, fill=(255, 255, 255, 255), anchor="ma")
+
+    return Image.alpha_composite(img, overlay).convert("RGB")
+
+
+def gerar_som_ambiente(caminho_saida: str, duracao: float = 6.0):
+    """Sintetiza um som ambiente suave (acorde de 3 tons com fade), sem
+    depender de nenhuma API — usado como música de fundo dos reels."""
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"sine=frequency=196:duration={duracao}",
+        "-f", "lavfi", "-i", f"sine=frequency=246.94:duration={duracao}",
+        "-f", "lavfi", "-i", f"sine=frequency=293.66:duration={duracao}",
+        "-filter_complex",
+        "[0][1][2]amix=inputs=3:duration=longest:weights='0.5 0.4 0.35',"
+        "volume=0.35,afade=t=in:d=1.5,afade=t=out:st=" + str(max(0, duracao - 1.5)) + ":d=1.5,lowpass=f=2000",
+        "-ar", "44100", caminho_saida,
+    ]
+    subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+
+
+def criar_reel_de_imagem(caminho_imagem: str, caminho_audio: str, caminho_saida: str, duracao: float = 6.0):
+    """Anima a imagem com um zoom lento (Ken Burns) e junta com o som ambiente."""
+    frames = int(duracao * 25)
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", caminho_imagem,
+        "-i", caminho_audio,
+        "-vf", f"zoompan=z='min(zoom+0.0008,1.15)':d={frames}:s=1080x1920:fps=25",
+        "-t", str(duracao),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest",
+        caminho_saida,
+    ]
+    subprocess.run(cmd, capture_output=True, timeout=120, check=True)
+
+
+def gerador_job_worker(job_id: str, api_key: str, funil: str, exemplos: list,
+                        estilo: str, quantidade: int, gerar_reels: bool,
+                        estilo_customizado: str = ""):
+    job = GERADOR_JOBS[job_id]
+    pasta_job = GERADOR_BASE_TMP / job_id
+    pasta_job.mkdir(exist_ok=True)
+
+    try:
+        job["status"] = "gerando_copies"
+        copies = chamar_openai_copies(api_key, funil, exemplos, quantidade)
+        if not copies:
+            job["status"] = "erro"
+            job["erro"] = "A IA não retornou nenhuma copy. Tenta de novo."
+            return
+
+        job["status"] = "gerando_imagens"
+        job["total"] = len(copies)
+        job["concluidos"] = 0
+
+        imagens_finais = []
+        for i in range(0, len(copies), 4):
+            lote = copies[i:i + 4]
+            grade = chamar_openai_imagem_grade(api_key, estilo, estilo_customizado)
+            quadrantes = cortar_grade_em_quatro(grade)
+
+            for quad, copy in zip(quadrantes, lote):
+                final = aplicar_texto_quote(
+                    quad, copy.get("titulo", ""), copy.get("apoio", ""), copy.get("cta", "")
+                )
+                caminho = pasta_job / f"imagem_{len(imagens_finais):02d}.png"
+                final.save(caminho)
+                imagens_finais.append(caminho)
+                job["concluidos"] += 1
+
+        arquivos_finais = list(imagens_finais)
+
+        if gerar_reels:
+            job["status"] = "gerando_reels"
+            job["concluidos_reels"] = 0
+            audio_path = pasta_job / "som_ambiente.mp3"
+            gerar_som_ambiente(str(audio_path), duracao=6.0)
+
+            for img_path in imagens_finais:
+                reel_path = pasta_job / f"{img_path.stem}_reel.mp4"
+                try:
+                    criar_reel_de_imagem(str(img_path), str(audio_path), str(reel_path), duracao=6.0)
+                    arquivos_finais.append(reel_path)
+                except Exception:
+                    pass  # se um reel falhar, mantém a imagem estática e segue
+                job["concluidos_reels"] += 1
+
+        zip_path = GERADOR_BASE_TMP / f"{job_id}.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in arquivos_finais:
+                zf.write(f, arcname=f.name)
+
+        job["status"] = "concluido"
+        job["zip_path"] = str(zip_path)
+        job["total"] = len(imagens_finais)
+        job["criado_em"] = time.time()
+
+    except requests.exceptions.HTTPError as e:
+        job["status"] = "erro"
+        detalhe = ""
+        try:
+            detalhe = e.response.json().get("error", {}).get("message", "")
+        except Exception:
+            pass
+        job["erro"] = f"Erro na API da OpenAI: {detalhe or str(e)}"
+    except Exception as e:
+        job["status"] = "erro"
+        job["erro"] = str(e)
+    finally:
+        # Mantém as imagens/vídeos zipados, mas limpa os arquivos soltos
+        for f in pasta_job.glob("*"):
+            if f.suffix != ".zip":
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+
+
+def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int):
+    job = JOBS[job_id]
+    pasta = BASE_TMP / job_id
+    pasta.mkdir(exist_ok=True)
+
+    def hook(d):
+        if d["status"] == "downloading":
+            job["status"] = "baixando"
+            job["arquivo_atual"] = d.get("info_dict", {}).get("title", "")
+        elif d["status"] == "finished":
+            job["concluidos"] += 1
+
+    ydl_opts = {
+        "outtmpl": str(pasta / "%(upload_date)s_%(id)s_%(title).50s.%(ext)s"),
+        # "best" pega um único arquivo já pronto (vídeo+áudio juntos) quando
+        # disponível, evitando o passo extra de merge via ffmpeg — mais rápido
+        # que "bestvideo+bestaudio" na maioria dos vídeos do TikTok.
+        "format": "best",
+        "ignoreerrors": True,
+        "progress_hooks": [hook],
+        "quiet": True,
+        "no_warnings": True,
+        "concurrent_fragment_downloads": 8,
+        "socket_timeout": 15,
+        "retries": 3,
+    }
+
+    # Só aplica intervalo quando for uma conta/perfil (playlist).
+    # Vídeo único não usa esses parâmetros.
+    if not eh_video_unico(url_alvo):
+        ydl_opts["playliststart"] = inicio
+        ydl_opts["playlistend"] = fim
+
+    try:
+        job["status"] = "iniciando"
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url_alvo])
+
+        arquivos = list(pasta.glob("*.mp4"))
+        if not arquivos:
+            job["status"] = "erro"
+            job["erro"] = ("Nenhum vídeo encontrado. Pode ser perfil/post privado, "
+                            "ou o Instagram/Facebook pediu login pra esse conteúdo.")
+            return
+
+        zip_path = BASE_TMP / f"{job_id}.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in arquivos:
+                zf.write(f, arcname=f.name)
+
+        job["status"] = "concluido"
+        job["zip_path"] = str(zip_path)
+        job["total_videos"] = len(arquivos)
+
+    except Exception as e:
+        job["status"] = "erro"
+        job["erro"] = str(e)
+    finally:
+        shutil.rmtree(pasta, ignore_errors=True)
+
+
+@app.route("/")
+def index():
+    return PAGINA_HTML
+
+
+@app.route("/icon-192.png")
+def icon_192():
+    return Response(base64.b64decode(ICON_192_B64), mimetype="image/png")
+
+
+@app.route("/icon-512.png")
+def icon_512():
+    return Response(base64.b64decode(ICON_512_B64), mimetype="image/png")
+
+
+@app.route("/manifest.json")
+def manifest():
+    return jsonify({
+        "name": "Baixador de TikTok",
+        "short_name": "TikTok DL",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0f0f0f",
+        "theme_color": "#0f0f0f",
+        "icons": [
+            {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+        ],
+    })
+
+
+@app.route("/editor")
+def editor_page():
+    return PAGINA_EDITOR_HTML
+
+
+@app.route("/api/editor/iniciar", methods=["POST"])
+def editor_iniciar():
+    videos = request.files.getlist("videos")
+    cta = request.files.get("cta")
+
+    if not videos:
+        return jsonify({"erro": "Envie pelo menos 1 vídeo"}), 400
+    if len(videos) > MAX_VIDEOS_EDITOR:
+        return jsonify({"erro": f"Máximo de {MAX_VIDEOS_EDITOR} vídeos por vez"}), 400
+    if not cta:
+        return jsonify({"erro": "Envie a imagem do CTA"}), 400
+
+    try:
+        brilho_bruto = float(request.form.get("brilho", 0))
+    except (TypeError, ValueError):
+        brilho_bruto = 0
+    brilho = max(-1.0, min(brilho_bruto / 100.0, 1.0))  # escala -50..50 -> -0.5..0.5
+
+    try:
+        duracao = float(request.form.get("duracao", 5))
+    except (TypeError, ValueError):
+        duracao = 5
+    duracao = max(1, min(duracao, 15))
+
+    usar_legenda = request.form.get("usar_legenda", "0") == "1"
+    modo_legenda = request.form.get("modo_legenda", "manual").strip()
+    api_key = request.form.get("api_key", "").strip()
+
+    if usar_legenda and modo_legenda == "automatica":
+        if not api_key:
+            return jsonify({"erro": "Configura sua chave OpenAI na aba Config primeiro"}), 400
+        legenda_texto = "__AUTO__"  # sinaliza pro worker que é modo automático
+    else:
+        legenda_texto = request.form.get("texto_legenda", "").strip() if usar_legenda else ""
+
+    legenda_modelo = request.form.get("modelo_legenda", "classico").strip()
+    modelos_validos = set(MODELOS_LEGENDA.keys()) | {"citacao"}
+    if legenda_modelo not in modelos_validos:
+        legenda_modelo = "classico"
+
+    cor_fundo_citacao = request.form.get("cor_fundo_citacao", "branco").strip()
+    if cor_fundo_citacao not in CORES_FAIXA_CITACAO:
+        cor_fundo_citacao = "branco"
+
+    job_id = uuid.uuid4().hex[:12]
+    pasta_job = EDITOR_BASE_TMP / job_id
+    pasta_job.mkdir(exist_ok=True)
+
+    for i, v in enumerate(videos):
+        nome_seguro = secure_filename(v.filename or f"video_{i}.mp4")
+        v.save(str(pasta_job / f"video_{i:02d}_{nome_seguro}"))
+
+    nome_cta = secure_filename(cta.filename or "cta.png")
+    cta_path = pasta_job / f"cta_{nome_cta}"
+    cta.save(str(cta_path))
+
+    EDITOR_JOBS[job_id] = {
+        "status": "na_fila",
+        "concluidos": 0,
+        "total": len(videos),
+        "criado_em": time.time(),
+    }
+
+    t = threading.Thread(
+        target=editor_job_worker,
+        args=(job_id, pasta_job, str(cta_path), brilho, duracao, legenda_texto,
+              legenda_modelo, cor_fundo_citacao, modo_legenda, api_key),
+        daemon=True,
+    )
+    t.start()
+
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/editor/status/<job_id>")
+def editor_status(job_id):
+    job = EDITOR_JOBS.get(job_id)
+    if not job:
+        return jsonify({"erro": "job não encontrado"}), 404
+    resposta = {
+        "status": job["status"],
+        "concluidos": job.get("concluidos", 0),
+        "total": job.get("total", 0),
+        "arquivo_atual": job.get("arquivo_atual", ""),
+    }
+    if job["status"] == "erro":
+        resposta["erro"] = job.get("erro")
+    return jsonify(resposta)
+
+
+@app.route("/api/editor/baixar/<job_id>")
+def editor_baixar(job_id):
+    # job_id vem da URL — valida o formato antes de usar em caminho de arquivo
+    if not re.fullmatch(r"[a-f0-9]{8,32}", job_id):
+        return jsonify({"erro": "id inválido"}), 400
+
+    job = EDITOR_JOBS.get(job_id)
+    if job and job["status"] == "concluido":
+        return send_file(job["zip_path"], as_attachment=True, download_name=f"editados_{job_id}.zip")
+
+    # Não está mais na memória (ex: processo reiniciou) — tenta achar o
+    # zip direto no disco, que sobrevive a reinícios.
+    zip_path = EDITOR_BASE_TMP / f"{job_id}.zip"
+    if zip_path.exists():
+        return send_file(str(zip_path), as_attachment=True, download_name=f"editados_{job_id}.zip")
+
+    return jsonify({"erro": "arquivo ainda não está pronto ou não encontrado"}), 400
+
+
+@app.route("/api/editor/recentes")
+def editor_recentes():
+    """Lista os processamentos das últimas horas — serve pra recuperar um
+    job cuja tela (ou até a memória do servidor) foi perdida. Combina o que
+    está em memória com uma varredura direta dos arquivos .zip no disco,
+    porque o disco sobrevive a reinícios do processo, a memória não."""
+    agora = time.time()
+    recentes = {}
+
+    for jid, job in EDITOR_JOBS.items():
+        idade = agora - job.get("criado_em", agora)
+        if idade > 3600:
+            continue
+        recentes[jid] = {
+            "job_id": jid,
+            "status": job["status"],
+            "concluidos": job.get("concluidos", 0),
+            "total": job.get("total", 0),
+            "minutos_atras": round(idade / 60, 1),
+        }
+
+    # Varre o disco por .zip que a memória não conhece mais (ex: processo
+    # reiniciou depois que o job terminou, mas antes de você conferir).
+    for zip_path in EDITOR_BASE_TMP.glob("*.zip"):
+        jid = zip_path.stem
+        if jid in recentes:
+            continue
+        idade = agora - zip_path.stat().st_mtime
+        if idade > 3600:
+            continue
+        recentes[jid] = {
+            "job_id": jid,
+            "status": "concluido",
+            "concluidos": None,
+            "total": None,
+            "minutos_atras": round(idade / 60, 1),
+            "recuperado_do_disco": True,
+        }
+
+    lista = sorted(recentes.values(), key=lambda x: x["minutos_atras"])
+    return jsonify({"jobs": lista})
+
+
+@app.route("/gerador")
+def gerador_page():
+    return PAGINA_GERADOR_HTML
+
+
+@app.route("/config")
+def config_page():
+    return PAGINA_CONFIG_HTML
+
+
+@app.route("/api/gerador/iniciar", methods=["POST"])
+def gerador_iniciar():
+    data = request.get_json(force=True)
+    api_key = data.get("api_key", "").strip()
+    funil = data.get("funil", "").strip()
+    exemplos = data.get("exemplos", [])
+    estilo = data.get("estilo", "foto_livro")
+    estilo_customizado = data.get("estilo_customizado", "").strip()
+    gerar_reels = bool(data.get("gerar_reels", False))
+
+    if not api_key:
+        return jsonify({"erro": "Informe sua chave da API OpenAI"}), 400
+    if not funil:
+        return jsonify({"erro": "Descreva o funil/nicho atual"}), 400
+
+    estilos_validos = set(PROMPTS_ESTILO.keys()) | {"personalizado"}
+    if estilo not in estilos_validos:
+        estilo = "foto_livro"
+    if estilo == "personalizado" and not estilo_customizado:
+        return jsonify({"erro": "Analisa um estilo personalizado primeiro (ou escolhe outro estilo)"}), 400
+
+    try:
+        quantidade = int(data.get("quantidade", 8))
+    except (TypeError, ValueError):
+        quantidade = 8
+    quantidade = max(4, min(quantidade, MAX_IMAGENS_GERADOR))
+    quantidade = (quantidade + 3) // 4 * 4  # arredonda pra múltiplo de 4
+
+    job_id = uuid.uuid4().hex[:12]
+    GERADOR_JOBS[job_id] = {
+        "status": "gerando_copies",
+        "concluidos": 0,
+        "total": quantidade,
+        "criado_em": time.time(),
+    }
+
+    t = threading.Thread(
+        target=gerador_job_worker,
+        args=(job_id, api_key, funil, exemplos, estilo, quantidade, gerar_reels, estilo_customizado),
+        daemon=True,
+    )
+    t.start()
+
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/gerador/analisar-estilo", methods=["POST"])
+def gerador_analisar_estilo():
+    api_key = request.form.get("api_key", "").strip()
+    imagens_files = request.files.getlist("imagens")
+
+    if not api_key:
+        return jsonify({"erro": "Configura sua chave OpenAI na aba Config primeiro"}), 400
+    if not imagens_files:
+        return jsonify({"erro": "Envie pelo menos 1 imagem de referência"}), 400
+
+    try:
+        imagens_bytes = [f.read() for f in imagens_files[:MAX_IMAGENS_ANALISE_ESTILO]]
+        descricao = analisar_estilo_visual(api_key, imagens_bytes)
+        return jsonify({"descricao_estilo": descricao, "imagens_analisadas": len(imagens_bytes)})
+    except requests.exceptions.HTTPError as e:
+        detalhe = ""
+        try:
+            detalhe = e.response.json().get("error", {}).get("message", "")
+        except Exception:
+            pass
+        return jsonify({"erro": f"Erro na API da OpenAI: {detalhe or str(e)}"}), 400
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+
+@app.route("/api/gerador/transcrever-copies", methods=["POST"])
+def gerador_transcrever_copies():
+    imagens_files = request.files.getlist("imagens")
+
+    if not imagens_files:
+        return jsonify({"erro": "Envie pelo menos 1 print"}), 400
+
+    try:
+        imagens_bytes = [f.read() for f in imagens_files[:MAX_IMAGENS_TRANSCRICAO_COPY]]
+        textos = transcrever_copies_de_imagens(imagens_bytes)
+        if not textos:
+            return jsonify({"erro": "Não consegui ler texto legível nos prints enviados"}), 400
+        return jsonify({"textos": textos})
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+
+@app.route("/api/gerador/status/<job_id>")
+def gerador_status(job_id):
+    job = GERADOR_JOBS.get(job_id)
+    if not job:
+        # Não está mais na memória — mas se o zip existe no disco, o
+        # trabalho terminou antes do processo reiniciar; informa concluído.
+        if re.fullmatch(r"[a-f0-9]{8,32}", job_id) and (GERADOR_BASE_TMP / f"{job_id}.zip").exists():
+            return jsonify({"status": "concluido", "concluidos": None, "concluidos_reels": None, "total": None})
+        return jsonify({"erro": "job não encontrado"}), 404
+    resposta = {
+        "status": job["status"],
+        "concluidos": job.get("concluidos", 0),
+        "concluidos_reels": job.get("concluidos_reels", 0),
+        "total": job.get("total", 0),
+    }
+    if job["status"] == "erro":
+        resposta["erro"] = job.get("erro")
+    return jsonify(resposta)
+
+
+@app.route("/api/gerador/baixar/<job_id>")
+def gerador_baixar(job_id):
+    if not re.fullmatch(r"[a-f0-9]{8,32}", job_id):
+        return jsonify({"erro": "id inválido"}), 400
+
+    job = GERADOR_JOBS.get(job_id)
+    if job and job["status"] == "concluido":
+        return send_file(job["zip_path"], as_attachment=True, download_name=f"gerado_{job_id}.zip")
+
+    zip_path = GERADOR_BASE_TMP / f"{job_id}.zip"
+    if zip_path.exists():
+        return send_file(str(zip_path), as_attachment=True, download_name=f"gerado_{job_id}.zip")
+
+    return jsonify({"erro": "arquivo ainda não está pronto ou não encontrado"}), 400
+
+
+@app.route("/api/gerador/recentes")
+def gerador_recentes():
+    """Lista processamentos das últimas horas, combinando memória + disco
+    (o disco sobrevive a reinícios do processo, a memória não)."""
+    agora = time.time()
+    recentes = {}
+
+    for jid, job in GERADOR_JOBS.items():
+        idade = agora - job.get("criado_em", agora)
+        if idade > 3600:
+            continue
+        recentes[jid] = {
+            "job_id": jid,
+            "status": job["status"],
+            "total": job.get("total", 0),
+            "minutos_atras": round(idade / 60, 1),
+        }
+
+    for zip_path in GERADOR_BASE_TMP.glob("*.zip"):
+        jid = zip_path.stem
+        if jid in recentes:
+            continue
+        idade = agora - zip_path.stat().st_mtime
+        if idade > 3600:
+            continue
+        recentes[jid] = {
+            "job_id": jid,
+            "status": "concluido",
+            "total": None,
+            "minutos_atras": round(idade / 60, 1),
+            "recuperado_do_disco": True,
+        }
+
+    lista = sorted(recentes.values(), key=lambda x: x["minutos_atras"])
+    return jsonify({"jobs": lista})
+
+
+@app.route("/api/iniciar", methods=["POST"])
+def iniciar():
+    data = request.get_json(force=True)
+    conta = data.get("conta", "").strip()
+
+    if not conta:
+        return jsonify({"erro": "Informe o link do vídeo, o @ ou o link da conta"}), 400
+
+    try:
+        inicio = int(data.get("de", 1))
+    except (TypeError, ValueError):
+        inicio = 1
+    try:
+        fim = int(data.get("ate", 10))
+    except (TypeError, ValueError):
+        fim = 10
+
+    inicio = max(1, min(inicio, LIMITE_MAXIMO))
+    fim = max(inicio, min(fim, LIMITE_MAXIMO))
+
+    url_alvo = normalizar_url(conta)
+    job_id = uuid.uuid4().hex[:12]
+
+    JOBS[job_id] = {
+        "status": "na_fila",
+        "concluidos": 0,
+        "arquivo_atual": "",
+        "criado_em": time.time(),
+        "video_unico": eh_video_unico(url_alvo),
+    }
+
+    t = threading.Thread(target=job_worker, args=(job_id, url_alvo, inicio, fim), daemon=True)
+    t.start()
+
+    return jsonify({"job_id": job_id, "video_unico": JOBS[job_id]["video_unico"]})
+
+
+@app.route("/api/status/<job_id>")
+def status(job_id):
+    job = JOBS.get(job_id)
+    if not job:
+        if re.fullmatch(r"[a-f0-9]{8,32}", job_id) and (BASE_TMP / f"{job_id}.zip").exists():
+            return jsonify({"status": "concluido", "concluidos": None, "arquivo_atual": ""})
+        return jsonify({"erro": "job não encontrado"}), 404
+    resposta = {
+        "status": job["status"],
+        "concluidos": job.get("concluidos", 0),
+        "arquivo_atual": job.get("arquivo_atual", ""),
+    }
+    if job["status"] == "erro":
+        resposta["erro"] = job.get("erro")
+    if job["status"] == "concluido":
+        resposta["total_videos"] = job.get("total_videos")
+    return jsonify(resposta)
+
+
+@app.route("/api/baixar/<job_id>")
+def baixar(job_id):
+    if not re.fullmatch(r"[a-f0-9]{8,32}", job_id):
+        return jsonify({"erro": "id inválido"}), 400
+
+    job = JOBS.get(job_id)
+    if job and job["status"] == "concluido":
+        return send_file(job["zip_path"], as_attachment=True, download_name=f"tiktok_{job_id}.zip")
+
+    zip_path = BASE_TMP / f"{job_id}.zip"
+    if zip_path.exists():
+        return send_file(str(zip_path), as_attachment=True, download_name=f"tiktok_{job_id}.zip")
+
+    return jsonify({"erro": "arquivo ainda não está pronto ou não encontrado"}), 400
+
+
+@app.route("/api/recentes")
+def baixador_recentes():
+    """Lista processamentos das últimas horas, combinando memória + disco."""
+    agora = time.time()
+    recentes = {}
+
+    for jid, job in JOBS.items():
+        idade = agora - job.get("criado_em", agora)
+        if idade > 3600:
+            continue
+        recentes[jid] = {
+            "job_id": jid,
+            "status": job["status"],
+            "total": job.get("total_videos", 0),
+            "minutos_atras": round(idade / 60, 1),
+        }
+
+    for zip_path in BASE_TMP.glob("*.zip"):
+        jid = zip_path.stem
+        if jid in recentes:
+            continue
+        idade = agora - zip_path.stat().st_mtime
+        if idade > 3600:
+            continue
+        recentes[jid] = {
+            "job_id": jid,
+            "status": "concluido",
+            "total": None,
+            "minutos_atras": round(idade / 60, 1),
+            "recuperado_do_disco": True,
+        }
+
+    lista = sorted(recentes.values(), key=lambda x: x["minutos_atras"])
+    return jsonify({"jobs": lista})
+
+
+# Limpeza básica de jobs antigos (roda a cada request, suficiente pra uso pessoal)
+@app.before_request
+def limpar_jobs_antigos():
+    agora = time.time()
+
+    expirados = [jid for jid, j in JOBS.items() if agora - j.get("criado_em", agora) > 3600]
+    for jid in expirados:
+        zip_path = BASE_TMP / f"{jid}.zip"
+        if zip_path.exists():
+            zip_path.unlink()
+        JOBS.pop(jid, None)
+
+    expirados_editor = [jid for jid, j in EDITOR_JOBS.items() if agora - j.get("criado_em", agora) > 3600]
+    for jid in expirados_editor:
+        zip_path = EDITOR_BASE_TMP / f"{jid}.zip"
+        if zip_path.exists():
+            zip_path.unlink()
+        pasta = EDITOR_BASE_TMP / jid
+        if pasta.exists():
+            shutil.rmtree(pasta, ignore_errors=True)
+        EDITOR_JOBS.pop(jid, None)
+
+    expirados_gerador = [jid for jid, j in GERADOR_JOBS.items() if agora - j.get("criado_em", agora) > 3600]
+    for jid in expirados_gerador:
+        zip_path = GERADOR_BASE_TMP / f"{jid}.zip"
+        if zip_path.exists():
+            zip_path.unlink()
+        pasta = GERADOR_BASE_TMP / jid
+        if pasta.exists():
+            shutil.rmtree(pasta, ignore_errors=True)
+        GERADOR_JOBS.pop(jid, None)
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
