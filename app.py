@@ -84,6 +84,19 @@ PAGINA_HTML = """
   }
   .aviso { font-size: 12px; color: #777; margin-top: 24px; line-height: 1.5; }
   label { font-size: 13px; color: #a0a0a0; }
+  .campo { margin-bottom: 12px; }
+  .conta-salva {
+    background: #1a1a1a; border: 1px solid #262626; border-radius: 10px;
+    padding: 12px; margin-bottom: 8px; font-size: 13px;
+  }
+  .conta-salva .nome { font-weight: 700; color: #fff; }
+  .conta-salva .detalhe { color: #888; font-size: 12px; margin-top: 2px; }
+  .conta-salva .acoes { display: flex; gap: 8px; margin-top: 8px; }
+  .conta-salva button {
+    width: auto; flex: 1; padding: 8px; font-size: 12px; border-radius: 8px;
+    background: #262626; color: #ccc; border: 1px solid #333; font-weight: 600;
+  }
+  .conta-salva button.usar { background: linear-gradient(135deg, #ff2d55, #25f4ee); color: #000; border: none; }
   .nav { display: flex; gap: 8px; margin-bottom: 20px; }
   .nav a {
     flex: 1; text-align: center; padding: 10px; border-radius: 8px;
@@ -104,7 +117,14 @@ PAGINA_HTML = """
     <h1>Baixador de Vídeos</h1>
     <p class="sub">TikTok, Instagram e Facebook — cole o link e baixe sem marca d'água</p>
 
-    <input id="conta" type="text" placeholder="Link do vídeo, reel, post ou perfil" />
+    <div id="lista-contas-salvas" style="display:none; margin-bottom:16px;"></div>
+
+    <input id="conta" type="text" placeholder="Link do vídeo, reel, post ou perfil" oninput="verificarContaConhecida()" />
+
+    <div class="campo" style="margin-bottom:12px;">
+      <label style="font-size:12px; color:#888;">Apelido (opcional — pra lembrar de qual conta é)</label>
+      <input id="apelido-conta" type="text" placeholder="Ex: Conta A - clipes motivacionais" style="margin-top:4px;" />
+    </div>
 
     <div id="campo-limite" style="display:flex; gap:10px;">
       <div style="flex:1;">
@@ -116,9 +136,12 @@ PAGINA_HTML = """
         <input id="ate" type="number" value="10" min="1" max="500" style="margin-top:6px;" />
       </div>
     </div>
+    <p id="aviso-conta-conhecida" style="display:none; font-size:12px; color:#25f4ee; margin-top:-6px; margin-bottom:12px;"></p>
     <p style="font-size:11px; color:#666; margin-top:-6px; margin-bottom:12px;">
-      Contando a partir do mais recente. Ex: 1 até 10 = os 10 mais novos. 11 até 20 = os próximos 10.
-      (Intervalo só funciona pra conta do TikTok — Instagram e Facebook, use link de vídeo único.)
+      Contando a partir do <b>primeiro vídeo postado</b> pela conta. Ex: 1 até 10 = os 10
+      primeiros vídeos que ela já postou. 11 até 20 = os próximos 10 (mais recentes que esses).
+      (Intervalo só funciona pra conta do TikTok — Instagram e Facebook, use link de vídeo único.
+      Pode demorar alguns segundos a mais no início pra contar o total de vídeos da conta.)
     </p>
 
     <button id="btn-iniciar" onclick="iniciar()">Baixar</button>
@@ -152,6 +175,7 @@ async function iniciar() {
   if (!conta) { alert('Digite o @ ou link da conta'); return; }
   const de = document.getElementById('de').value || 1;
   const ate = document.getElementById('ate').value || 10;
+  const apelido = document.getElementById('apelido-conta').value.trim();
 
   document.getElementById('btn-iniciar').disabled = true;
   document.getElementById('status-box').style.display = 'block';
@@ -164,7 +188,7 @@ async function iniciar() {
     resp = await fetch('/api/iniciar', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conta, de, ate })
+      body: JSON.stringify({ conta, de, ate, ordem: 'antigos' })
     });
     data = await resp.json();
   } catch (e) {
@@ -181,6 +205,9 @@ async function iniciar() {
 
   jobId = data.job_id;
   localStorage.setItem('baixador_job_ativo', jobId);
+  // Guarda o que estava sendo baixado, pra atualizar o histórico da conta
+  // quando o download terminar (não dá pra saber isso só pelo job_id).
+  localStorage.setItem('baixador_job_pendente_conta', JSON.stringify({ conta, de: Number(de), ate: Number(ate), apelido }));
   poller = setInterval(checarStatus, 2000);
 }
 
@@ -210,6 +237,7 @@ async function checarStatus() {
     link.href = '/api/baixar/' + jobId;
     link.style.display = 'block';
     document.getElementById('btn-iniciar').disabled = false;
+    registrarConclusaoNoHistorico();
   } else if (data.status === 'erro') {
     clearInterval(poller);
     localStorage.removeItem('baixador_job_ativo');
@@ -254,6 +282,120 @@ async function verRecentes() {
     div.appendChild(item);
   });
 }
+
+function normalizarChaveConta(conta) {
+  return conta.trim().toLowerCase().replace(/^@/, '').replace(/\\/$/, '');
+}
+
+function carregarContasSalvas() {
+  return JSON.parse(localStorage.getItem('baixador_contas') || '{}');
+}
+
+function salvarContasSalvas(contas) {
+  localStorage.setItem('baixador_contas', JSON.stringify(contas));
+}
+
+function registrarConclusaoNoHistorico() {
+  const pendenteRaw = localStorage.getItem('baixador_job_pendente_conta');
+  if (!pendenteRaw) return;
+  localStorage.removeItem('baixador_job_pendente_conta');
+
+  const pendente = JSON.parse(pendenteRaw);
+  const chave = normalizarChaveConta(pendente.conta);
+  const contas = carregarContasSalvas();
+  const existente = contas[chave] || { total_baixados: 0, apelido: '' };
+
+  contas[chave] = {
+    conta_original: pendente.conta,
+    apelido: pendente.apelido || existente.apelido || '',
+    total_baixados: Math.max(existente.total_baixados || 0, pendente.ate),
+    atualizado_em: new Date().toISOString(),
+  };
+  salvarContasSalvas(contas);
+  renderizarContasSalvas();
+}
+
+function renderizarContasSalvas() {
+  const contas = carregarContasSalvas();
+  const div = document.getElementById('lista-contas-salvas');
+  const chaves = Object.keys(contas);
+
+  if (chaves.length === 0) {
+    div.style.display = 'none';
+    return;
+  }
+
+  div.style.display = 'block';
+  div.innerHTML = '<label style="margin-bottom:8px;">📋 Contas já usadas</label>';
+
+  chaves
+    .sort((a, b) => new Date(contas[b].atualizado_em) - new Date(contas[a].atualizado_em))
+    .forEach(chave => {
+      const c = contas[chave];
+      const item = document.createElement('div');
+      item.className = 'conta-salva';
+      const proxDe = c.total_baixados + 1;
+      const proxAte = c.total_baixados + 10;
+      item.innerHTML = `
+        <div class="nome">${c.apelido || c.conta_original}</div>
+        <div class="detalhe">${c.conta_original} — ${c.total_baixados} vídeo(s) já baixado(s)</div>
+        <div class="acoes">
+          <button class="usar" onclick='baixarProximosDaConta(${JSON.stringify(chave)})'>⬇ Baixar próximos (${proxDe}-${proxAte})</button>
+          <button onclick='usarContaSalva(${JSON.stringify(chave)})'>Usar</button>
+          <button onclick='removerContaSalva(${JSON.stringify(chave)})'>✕</button>
+        </div>
+      `;
+      div.appendChild(item);
+    });
+}
+
+function usarContaSalva(chave) {
+  const contas = carregarContasSalvas();
+  const c = contas[chave];
+  if (!c) return;
+  document.getElementById('conta').value = c.conta_original;
+  document.getElementById('apelido-conta').value = c.apelido || '';
+  verificarContaConhecida();
+}
+
+function baixarProximosDaConta(chave) {
+  const contas = carregarContasSalvas();
+  const c = contas[chave];
+  if (!c) return;
+  document.getElementById('conta').value = c.conta_original;
+  document.getElementById('apelido-conta').value = c.apelido || '';
+  document.getElementById('de').value = c.total_baixados + 1;
+  document.getElementById('ate').value = c.total_baixados + 10;
+  verificarContaConhecida();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function removerContaSalva(chave) {
+  const contas = carregarContasSalvas();
+  delete contas[chave];
+  salvarContasSalvas(contas);
+  renderizarContasSalvas();
+}
+
+function verificarContaConhecida() {
+  const conta = document.getElementById('conta').value.trim();
+  const aviso = document.getElementById('aviso-conta-conhecida');
+  if (!conta) { aviso.style.display = 'none'; return; }
+
+  const chave = normalizarChaveConta(conta);
+  const contas = carregarContasSalvas();
+  const c = contas[chave];
+
+  if (c) {
+    aviso.style.display = 'block';
+    aviso.textContent = `📋 Essa conta já tem ${c.total_baixados} vídeo(s) baixado(s). ` +
+      `Clica em "Baixar próximos" na lista acima pra continuar de onde parou, ou ajusta o intervalo manualmente.`;
+  } else {
+    aviso.style.display = 'none';
+  }
+}
+
+renderizarContasSalvas();
 
 // Retoma automaticamente um processamento que ficou rodando em segundo
 // plano no servidor (ex: você desligou o celular ou saiu do app).
@@ -1271,8 +1413,6 @@ def normalizar_url(entrada: str) -> str:
     entrada = entrada.strip()
     if entrada.startswith("http"):
         return entrada
-    # Sem "http", assume que é @usuario do TikTok (Instagram/Facebook sempre
-    # precisam vir como link completo, colado direto do app).
     usuario = entrada.lstrip("@")
     return f"https://www.tiktok.com/@{usuario}"
 
@@ -1292,9 +1432,6 @@ def eh_video_unico(url: str) -> bool:
     return any(re.search(p, url) for p in padroes)
 
 
-# ---------------------------------------------------------
-# Auto-editor: filtro de brilho + CTA no final, em lote
-# ---------------------------------------------------------
 EDITOR_BASE_TMP = Path(tempfile.gettempdir()) / "editor_jobs"
 EDITOR_BASE_TMP.mkdir(exist_ok=True)
 EDITOR_JOBS = {}
@@ -1931,7 +2068,24 @@ def gerador_job_worker(job_id: str, api_key: str, funil: str, exemplos: list,
                     pass
 
 
-def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int):
+def contar_videos_conta(url: str) -> int:
+    """Conta quantos vídeos a conta tem no total, sem baixar nada (usa
+    extração 'flat', bem mais rápida que abrir vídeo por vídeo). Necessário
+    pra numerar do mais antigo pro mais novo, já que o TikTok sempre lista
+    os vídeos do mais recente pro mais antigo."""
+    ydl_opts = {
+        "extract_flat": True,
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    entradas = info.get("entries", []) if info else []
+    return len(list(entradas))
+
+
+def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int, ordem: str = "recentes"):
     job = JOBS[job_id]
     pasta = BASE_TMP / job_id
     pasta.mkdir(exist_ok=True)
@@ -1956,8 +2110,17 @@ def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int):
     }
 
     if not eh_video_unico(url_alvo):
-        ydl_opts["playliststart"] = inicio
-        ydl_opts["playlistend"] = fim
+        inicio_real, fim_real = inicio, fim
+        if ordem == "antigos":
+            try:
+                total = contar_videos_conta(url_alvo)
+                if total > 0:
+                    inicio_real = max(1, total - fim + 1)
+                    fim_real = max(1, total - inicio + 1)
+            except Exception:
+                pass
+        ydl_opts["playliststart"] = inicio_real
+        ydl_opts["playlistend"] = fim_real
 
     try:
         job["status"] = "iniciando"
@@ -1993,6 +2156,9 @@ def index():
 
 
 def _gerar_icone(size):
+    """Desenha o ícone do app na hora (nota musical estilo TikTok, ciano/
+    rosa sobre fundo preto) — evita guardar uma string enorme no código,
+    que era a causa mais provável do arquivo cortar ao copiar no celular."""
     bg = Image.new("RGBA", (size, size), (10, 10, 10, 255))
     radius = int(size * 0.22)
     mask = Image.new("L", (size, size), 0)
@@ -2395,6 +2561,10 @@ def iniciar():
     inicio = max(1, min(inicio, LIMITE_MAXIMO))
     fim = max(inicio, min(fim, LIMITE_MAXIMO))
 
+    ordem = data.get("ordem", "recentes").strip()
+    if ordem not in ("recentes", "antigos"):
+        ordem = "recentes"
+
     url_alvo = normalizar_url(conta)
     job_id = uuid.uuid4().hex[:12]
 
@@ -2406,10 +2576,28 @@ def iniciar():
         "video_unico": eh_video_unico(url_alvo),
     }
 
-    t = threading.Thread(target=job_worker, args=(job_id, url_alvo, inicio, fim), daemon=True)
+    t = threading.Thread(target=job_worker, args=(job_id, url_alvo, inicio, fim, ordem), daemon=True)
     t.start()
 
     return jsonify({"job_id": job_id, "video_unico": JOBS[job_id]["video_unico"]})
+
+
+@app.route("/api/contar-videos", methods=["POST"])
+def contar_videos_rota():
+    data = request.get_json(force=True)
+    conta = data.get("conta", "").strip()
+    if not conta:
+        return jsonify({"erro": "Informe o @ ou link da conta"}), 400
+
+    url_alvo = normalizar_url(conta)
+    if eh_video_unico(url_alvo):
+        return jsonify({"erro": "Isso é um link de vídeo único, não uma conta"}), 400
+
+    try:
+        total = contar_videos_conta(url_alvo)
+        return jsonify({"total": total})
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 400
 
 
 @app.route("/api/status/<job_id>")
