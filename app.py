@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import zipfile
 import uuid
+import random
 import threading
 import time
 import base64
@@ -113,6 +114,7 @@ PAGINA_HTML = """
       <a href="/editor">Editor</a>
       <a href="/gerador">Gerador</a>
       <a href="/config">Config</a>
+      <a href="/biblioteca">Biblioteca</a>
     </div>
     <h1>Baixador de Vídeos</h1>
     <p class="sub">TikTok, Instagram e Facebook — cole o link e baixe sem marca d'água</p>
@@ -495,6 +497,7 @@ PAGINA_EDITOR_HTML = """
       <a href="/editor" class="ativo">Editor</a>
       <a href="/gerador">Gerador</a>
       <a href="/config">Config</a>
+      <a href="/biblioteca">Biblioteca</a>
     </div>
     <h1>Auto-editor</h1>
     <p class="sub">Filtro de brilho + CTA em massa no final dos seus vídeos</p>
@@ -862,6 +865,7 @@ PAGINA_GERADOR_HTML = """
       <a href="/editor">Editor</a>
       <a href="/gerador" class="ativo">Gerador</a>
       <a href="/config">Config</a>
+      <a href="/biblioteca">Biblioteca</a>
     </div>
     <h1>Gerador IA</h1>
     <p class="sub">Copies + imagens geradas por IA, no seu funil, alimentado pelos seus exemplos</p>
@@ -1326,6 +1330,7 @@ PAGINA_CONFIG_HTML = """
       <a href="/editor">Editor</a>
       <a href="/gerador">Gerador</a>
       <a href="/config" class="ativo">Config</a>
+      <a href="/biblioteca">Biblioteca</a>
     </div>
     <h1>Configurações</h1>
     <p class="sub">Suas chaves de API, usadas por todas as ferramentas do app</p>
@@ -1395,6 +1400,733 @@ carregarStatus();
 </html>
 """
 
+PAGINA_BIBLIOTECA_HTML = """
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Biblioteca</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#0f0f0f">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Roboto, Arial, sans-serif;
+    background: #0f0f0f;
+    color: #f5f5f5;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px 60px;
+    min-height: 100vh;
+  }
+  .card { width: 100%; max-width: 420px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  h2 { font-size: 15px; margin: 28px 0 10px; color: #ddd; }
+  p.sub { color: #a0a0a0; font-size: 14px; margin-top: 0; margin-bottom: 20px; }
+  .nav { display: flex; gap: 6px; margin-bottom: 20px; flex-wrap: wrap; }
+  .nav a {
+    flex: 1; min-width: 60px; text-align: center; padding: 9px 4px; border-radius: 8px;
+    text-decoration: none; font-size: 12px; font-weight: 600; color: #888;
+    background: #1a1a1a; border: 1px solid #262626;
+  }
+  .nav a.ativo { color: #000; background: linear-gradient(135deg, #ff2d55, #25f4ee); border: none; }
+  label { font-size: 13px; color: #ccc; display: block; margin-bottom: 6px; font-weight: 600; }
+  .campo { margin-bottom: 16px; }
+  .ajuda { font-size: 11px; color: #666; margin-top: 4px; line-height: 1.4; }
+  input[type="file"], input[type="number"], select {
+    width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #333;
+    background: #1a1a1a; color: #ccc; font-size: 13px;
+  }
+  select { color: #fff; font-size: 15px; }
+  button {
+    width: 100%; padding: 14px; border-radius: 10px; border: none;
+    background: linear-gradient(135deg, #ff2d55, #25f4ee);
+    color: #000; font-weight: 700; font-size: 16px; cursor: pointer;
+  }
+  button.secundario {
+    background: #1a1a1a; color: #ccc; border: 1px solid #333; font-weight: 600; font-size: 14px; padding: 10px;
+  }
+  button:disabled { opacity: 0.4; }
+  .item-lib {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    background: #1a1a1a; border: 1px solid #262626; border-radius: 8px;
+    padding: 10px 12px; margin-bottom: 6px; font-size: 13px;
+  }
+  .item-lib .nome { color: #ccc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item-lib .dur { color: #666; font-size: 11px; flex-shrink: 0; }
+  .item-lib button {
+    width: auto; padding: 4px 10px; font-size: 12px; background: #ff2d5522; color: #ff6b8a;
+    border: 1px solid #ff2d5544; flex-shrink: 0;
+  }
+  .resumo-lib { font-size: 12px; color: #888; margin-bottom: 10px; }
+  .job-recente {
+    background: #1a1a1a; border: 1px solid #262626; border-radius: 10px;
+    padding: 12px; margin-bottom: 8px; font-size: 13px;
+  }
+  .job-recente a { display: inline-block; margin-top: 6px; color: #25f4ee; font-weight: 700; text-decoration: none; }
+  #status-box { margin-top: 20px; padding: 16px; border-radius: 10px; background: #1a1a1a; display: none; }
+  #status-text { font-size: 14px; margin-bottom: 8px; }
+  .bar-bg { background: #333; border-radius: 6px; height: 8px; overflow: hidden; }
+  .bar-fill { background: linear-gradient(135deg, #ff2d55, #25f4ee); height: 100%; width: 0%; transition: width 0.3s; }
+  #download-link {
+    display: none; margin-top: 16px; text-align: center; padding: 14px;
+    border-radius: 10px; background: #16a34a; color: #fff; text-decoration: none; font-weight: 700;
+  }
+  .aviso { font-size: 12px; color: #777; margin-top: 24px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="nav">
+      <a href="/">Baixador</a>
+      <a href="/editor">Editor</a>
+      <a href="/gerador">Gerador</a>
+      <a href="/biblioteca" class="ativo">Biblioteca</a>
+      <a href="/config">Config</a>
+    </div>
+    <h1>Biblioteca</h1>
+    <p class="sub">Guarda clipes curtos e áudios, e o app monta compilados aleatórios com transição e legenda</p>
+
+    <h2 style="margin-top:0;">👤 Conta</h2>
+    <div class="campo">
+      <label>Biblioteca da conta</label>
+      <select id="select-conta" onchange="trocarConta()"></select>
+      <p class="ajuda">Cada conta tem sua própria biblioteca (vídeos, áudios, músicas) — separada das outras, pra não repetir material entre contas.</p>
+    </div>
+    <div class="campo" style="display:flex; gap:8px;">
+      <input id="nova-conta-nome" type="text" placeholder="Nome de uma conta nova" style="flex:1; padding:12px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#fff; font-size:14px;" />
+      <button class="secundario" style="width:auto; padding:12px 16px;" onclick="criarConta()">+ Criar</button>
+    </div>
+
+    <h2>🪝 Vídeos de abertura (Hook)</h2>
+    <div class="campo">
+      <input id="input-hooks" type="file" accept="video/*" multiple />
+      <p class="ajuda">Sempre entram <b>primeiro</b> no compilado. O app sorteia 1 desses pra abrir cada vídeo gerado.</p>
+    </div>
+    <button class="secundario" onclick="subirHooks()" id="btn-subir-hooks">⬆ Adicionar à biblioteca</button>
+    <p id="status-upload-hooks" class="ajuda" style="margin-top:8px; margin-bottom:14px;"></p>
+    <div id="lista-hooks"></div>
+
+    <h2>🎬 Clipes do meio</h2>
+    <div class="campo">
+      <input id="input-videos" type="file" accept="video/*" multiple />
+      <p class="ajuda">Sobe quantos clipes curtos quiser (ex: 6 segundos cada). Ficam guardados aqui até você apagar ou o servidor reiniciar. São sorteados aleatoriamente pro meio do vídeo.</p>
+    </div>
+    <button class="secundario" onclick="subirVideos()" id="btn-subir-videos">⬆ Adicionar à biblioteca</button>
+    <p id="status-upload-videos" class="ajuda" style="margin-top:8px; margin-bottom:14px;"></p>
+    <div class="resumo-lib" id="resumo-videos"></div>
+    <div id="lista-videos"></div>
+
+    <h2>🎯 Vídeos de encerramento (CTA)</h2>
+    <div class="campo">
+      <input id="input-ctas" type="file" accept="video/*" multiple />
+      <p class="ajuda">Sempre entram <b>por último</b> no compilado. O app sorteia 1 desses pra fechar cada vídeo gerado.</p>
+    </div>
+    <button class="secundario" onclick="subirCtas()" id="btn-subir-ctas">⬆ Adicionar à biblioteca</button>
+    <p id="status-upload-ctas" class="ajuda" style="margin-top:8px; margin-bottom:14px;"></p>
+    <div id="lista-ctas"></div>
+
+    <h2>🎵 Áudios</h2>
+    <div class="campo">
+      <input id="input-audios" type="file" accept="audio/*,video/*" multiple />
+      <p class="ajuda">O áudio que vai tocar no compilado (ex: 1 minuto). Pode ser um arquivo de áudio ou até um vídeo (só o som é usado).</p>
+    </div>
+    <button class="secundario" onclick="subirAudios()" id="btn-subir-audios">⬆ Adicionar à biblioteca</button>
+    <p id="status-upload-audios" class="ajuda" style="margin-top:8px; margin-bottom:14px;"></p>
+    <div id="lista-audios"></div>
+
+    <h2>🎶 Músicas de fundo (opcional)</h2>
+    <div class="campo">
+      <input id="input-musicas" type="file" accept="audio/*,video/*" multiple />
+      <p class="ajuda">Guarda várias músicas de fundo. Quando ativado, o app sorteia uma aleatória por vídeo gerado, bem mais baixa que a voz.</p>
+    </div>
+    <button class="secundario" onclick="subirMusicas()" id="btn-subir-musicas">⬆ Adicionar à biblioteca</button>
+    <p id="status-upload-musicas" class="ajuda" style="margin-top:8px; margin-bottom:14px;"></p>
+    <div id="lista-musicas"></div>
+
+    <h2>🎲 Gerar compilados</h2>
+
+    <div class="campo">
+      <label>Qual áudio usar</label>
+      <select id="select-audio"><option value="">Nenhum áudio na biblioteca ainda</option></select>
+    </div>
+
+    <div class="campo">
+      <label>Quantas versões diferentes</label>
+      <input id="quantidade-compilado" type="number" value="1" min="1" max="20" />
+      <p class="ajuda">Cada versão sorteia clipes diferentes da biblioteca (pode repetir clipe se precisar pra cobrir a duração do áudio).</p>
+    </div>
+
+    <div class="campo" style="display:flex; align-items:center; gap:8px;">
+      <input id="usar-musica-compilado" type="checkbox" style="width:auto;" />
+      <label style="margin-bottom:0;" for="usar-musica-compilado">Adicionar música de fundo aleatória (bem baixinha, atrás da voz)</label>
+    </div>
+
+    <div class="campo" style="display:flex; align-items:center; gap:8px;">
+      <input id="usar-legenda-compilado" type="checkbox" style="width:auto;" onchange="alternarLegendaCompilado()" />
+      <label style="margin-bottom:0;" for="usar-legenda-compilado">Adicionar legenda automática (transcreve o áudio)</label>
+    </div>
+
+    <div id="campos-legenda-compilado" style="display:none;">
+      <div id="status-chave-compilado" class="campo" style="background:#1a1a1a; border:1px solid #262626; border-radius:10px; padding:10px 12px; font-size:12px;">
+        Verificando chave da API...
+      </div>
+      <div class="campo">
+        <label>Modelo da legenda</label>
+        <select id="modelo-legenda-compilado" onchange="alternarCorFundoCompilado()">
+          <option value="classico">Clássico — branco, embaixo</option>
+          <option value="impacto">Impacto — amarelo, no topo</option>
+          <option value="neon">Neon — ciano, no centro</option>
+          <option value="minimalista">Minimalista — pequeno, canto</option>
+          <option value="citacao">Citação — faixa colorida, centro</option>
+        </select>
+      </div>
+      <div id="campo-cor-fundo-compilado" style="display:none;">
+        <div class="campo">
+          <label>Cor da faixa</label>
+          <select id="cor-fundo-citacao-compilado">
+            <option value="branco">Branco (texto preto)</option>
+            <option value="preto">Preto (texto branco)</option>
+            <option value="vermelho">Vermelho (texto branco)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <button id="btn-gerar-compilado" onclick="gerarCompilado()" style="margin-top:10px;">Gerar compilado(s)</button>
+
+    <button type="button" class="secundario" style="margin-top:10px;" onclick="verRecentesCompilado()">
+      🕓 Ver processamentos recentes (última hora)
+    </button>
+    <div id="lista-recentes" style="display:none; margin-top:12px;"></div>
+
+    <div id="status-box">
+      <div id="status-text">Preparando...</div>
+      <div class="bar-bg"><div id="bar-fill" class="bar-fill"></div></div>
+    </div>
+
+    <a id="download-link" href="#">Baixar ZIP com os compilados</a>
+
+    <p class="aviso">
+      A biblioteca fica guardada no servidor enquanto ele não reiniciar (um novo deploy
+      apaga tudo). Não é um armazenamento permanente — pense nela como uma "mesa de
+      trabalho" temporária, não um HD.
+    </p>
+  </div>
+
+<script>
+let jobId = null;
+let poller = null;
+let contaAtual = localStorage.getItem('biblioteca_conta_atual') || '';
+
+async function carregarContas() {
+  const resp = await fetch('/api/biblioteca/contas');
+  const data = await resp.json();
+  const contas = data.contas || [];
+  const select = document.getElementById('select-conta');
+
+  if (contas.length === 0) {
+    // Nenhuma conta ainda — cria a primeira automaticamente como "padrao"
+    await criarContaSilenciosa('padrao');
+    return;
+  }
+
+  select.innerHTML = '';
+  contas.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = `${c.id} (${c.hooks} hooks, ${c.videos} meio, ${c.ctas} ctas, ${c.audios} áudios, ${c.musicas} músicas)`;
+    select.appendChild(opt);
+  });
+
+  if (!contaAtual || !contas.some(c => c.id === contaAtual)) {
+    contaAtual = contas[0].id;
+  }
+  select.value = contaAtual;
+  localStorage.setItem('biblioteca_conta_atual', contaAtual);
+}
+
+async function criarContaSilenciosa(nome) {
+  const resp = await fetch('/api/biblioteca/contas', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nome }),
+  });
+  const data = await resp.json();
+  contaAtual = data.conta_criada || nome;
+  localStorage.setItem('biblioteca_conta_atual', contaAtual);
+  await carregarContas();
+}
+
+async function criarConta() {
+  const nome = document.getElementById('nova-conta-nome').value.trim();
+  if (!nome) { alert('Digite um nome pra conta nova'); return; }
+  await criarContaSilenciosa(nome);
+  document.getElementById('nova-conta-nome').value = '';
+  await carregarBiblioteca();
+}
+
+function trocarConta() {
+  contaAtual = document.getElementById('select-conta').value;
+  localStorage.setItem('biblioteca_conta_atual', contaAtual);
+  carregarBiblioteca();
+}
+
+async function carregarBiblioteca() {
+  await Promise.all([carregarVideos(), carregarAudios(), carregarMusicas(), carregarHooks(), carregarCtas()]);
+}
+
+async function carregarHooks() {
+  const resp = await fetch(`/api/biblioteca/${contaAtual}/hooks`);
+  const data = await resp.json();
+  const itens = data.itens || [];
+  const div = document.getElementById('lista-hooks');
+
+  if (itens.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhum vídeo de abertura ainda.</p>';
+    return;
+  }
+
+  div.innerHTML = '';
+  itens.forEach(item => {
+    const el = document.createElement('div');
+    el.className = 'item-lib';
+    el.innerHTML = `
+      <div class="nome">${item.nome}</div>
+      <div class="dur">${item.duracao}s</div>
+      <button onclick="apagarHook('${item.id}')">✕</button>
+    `;
+    div.appendChild(el);
+  });
+}
+
+async function subirHooks() {
+  const arquivos = document.getElementById('input-hooks').files;
+  if (arquivos.length === 0) { alert('Escolhe pelo menos 1 vídeo de abertura'); return; }
+
+  const formData = new FormData();
+  for (const f of arquivos) formData.append('hooks', f);
+
+  document.getElementById('btn-subir-hooks').disabled = true;
+  document.getElementById('status-upload-hooks').textContent = 'Enviando...';
+
+  try {
+    const resp = await fetch(`/api/biblioteca/${contaAtual}/hooks`, { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.erro) {
+      document.getElementById('status-upload-hooks').textContent = 'Erro: ' + data.erro;
+    } else {
+      document.getElementById('status-upload-hooks').textContent = '✅ Adicionado(s)!';
+      document.getElementById('input-hooks').value = '';
+      await carregarHooks();
+    }
+  } catch (e) {
+    document.getElementById('status-upload-hooks').textContent = 'Erro de conexão. Tenta de novo.';
+  }
+  document.getElementById('btn-subir-hooks').disabled = false;
+}
+
+async function apagarHook(id) {
+  await fetch(`/api/biblioteca/${contaAtual}/hooks/` + id, { method: 'DELETE' });
+  await carregarHooks();
+}
+
+async function carregarCtas() {
+  const resp = await fetch(`/api/biblioteca/${contaAtual}/ctas`);
+  const data = await resp.json();
+  const itens = data.itens || [];
+  const div = document.getElementById('lista-ctas');
+
+  if (itens.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhum vídeo de encerramento ainda.</p>';
+    return;
+  }
+
+  div.innerHTML = '';
+  itens.forEach(item => {
+    const el = document.createElement('div');
+    el.className = 'item-lib';
+    el.innerHTML = `
+      <div class="nome">${item.nome}</div>
+      <div class="dur">${item.duracao}s</div>
+      <button onclick="apagarCta('${item.id}')">✕</button>
+    `;
+    div.appendChild(el);
+  });
+}
+
+async function subirCtas() {
+  const arquivos = document.getElementById('input-ctas').files;
+  if (arquivos.length === 0) { alert('Escolhe pelo menos 1 vídeo de encerramento'); return; }
+
+  const formData = new FormData();
+  for (const f of arquivos) formData.append('ctas', f);
+
+  document.getElementById('btn-subir-ctas').disabled = true;
+  document.getElementById('status-upload-ctas').textContent = 'Enviando...';
+
+  try {
+    const resp = await fetch(`/api/biblioteca/${contaAtual}/ctas`, { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.erro) {
+      document.getElementById('status-upload-ctas').textContent = 'Erro: ' + data.erro;
+    } else {
+      document.getElementById('status-upload-ctas').textContent = '✅ Adicionado(s)!';
+      document.getElementById('input-ctas').value = '';
+      await carregarCtas();
+    }
+  } catch (e) {
+    document.getElementById('status-upload-ctas').textContent = 'Erro de conexão. Tenta de novo.';
+  }
+  document.getElementById('btn-subir-ctas').disabled = false;
+}
+
+async function apagarCta(id) {
+  await fetch(`/api/biblioteca/${contaAtual}/ctas/` + id, { method: 'DELETE' });
+  await carregarCtas();
+}
+
+async function carregarMusicas() {
+  const resp = await fetch(`/api/biblioteca/${contaAtual}/musicas`);
+  const data = await resp.json();
+  const itens = data.itens || [];
+  const div = document.getElementById('lista-musicas');
+
+  if (itens.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhuma música na biblioteca dessa conta ainda.</p>';
+    return;
+  }
+
+  div.innerHTML = '';
+  itens.forEach(item => {
+    const el = document.createElement('div');
+    el.className = 'item-lib';
+    el.innerHTML = `
+      <div class="nome">${item.nome}</div>
+      <div class="dur">${item.duracao}s</div>
+      <button onclick="apagarMusica('${item.id}')">✕</button>
+    `;
+    div.appendChild(el);
+  });
+}
+
+async function subirMusicas() {
+  const arquivos = document.getElementById('input-musicas').files;
+  if (arquivos.length === 0) { alert('Escolhe pelo menos 1 música'); return; }
+
+  const formData = new FormData();
+  for (const f of arquivos) formData.append('musicas', f);
+
+  document.getElementById('btn-subir-musicas').disabled = true;
+  document.getElementById('status-upload-musicas').textContent = 'Enviando...';
+
+  try {
+    const resp = await fetch(`/api/biblioteca/${contaAtual}/musicas`, { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.erro) {
+      document.getElementById('status-upload-musicas').textContent = 'Erro: ' + data.erro;
+    } else {
+      document.getElementById('status-upload-musicas').textContent = '✅ Adicionada(s)!';
+      document.getElementById('input-musicas').value = '';
+      await carregarMusicas();
+    }
+  } catch (e) {
+    document.getElementById('status-upload-musicas').textContent = 'Erro de conexão. Tenta de novo.';
+  }
+  document.getElementById('btn-subir-musicas').disabled = false;
+}
+
+async function apagarMusica(id) {
+  await fetch(`/api/biblioteca/${contaAtual}/musicas/` + id, { method: 'DELETE' });
+  await carregarMusicas();
+}
+
+async function carregarVideos() {
+  const resp = await fetch(`/api/biblioteca/${contaAtual}/videos`);
+  const data = await resp.json();
+  const itens = data.itens || [];
+  const div = document.getElementById('lista-videos');
+  const resumo = document.getElementById('resumo-videos');
+
+  if (itens.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhum clipe na biblioteca dessa conta ainda.</p>';
+    resumo.textContent = '';
+    return;
+  }
+
+  const duracaoTotal = itens.reduce((s, i) => s + i.duracao, 0);
+  resumo.textContent = `${itens.length} clipe(s) — ${duracaoTotal.toFixed(0)}s de material no total`;
+
+  div.innerHTML = '';
+  itens.forEach(item => {
+    const el = document.createElement('div');
+    el.className = 'item-lib';
+    el.innerHTML = `
+      <div class="nome">${item.nome}</div>
+      <div class="dur">${item.duracao}s</div>
+      <button onclick="apagarVideo('${item.id}')">✕</button>
+    `;
+    div.appendChild(el);
+  });
+}
+
+async function carregarAudios() {
+  const resp = await fetch(`/api/biblioteca/${contaAtual}/audios`);
+  const data = await resp.json();
+  const itens = data.itens || [];
+  const div = document.getElementById('lista-audios');
+  const select = document.getElementById('select-audio');
+
+  if (itens.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhum áudio na biblioteca dessa conta ainda.</p>';
+    select.innerHTML = '<option value="">Nenhum áudio na biblioteca ainda</option>';
+    return;
+  }
+
+  div.innerHTML = '';
+  select.innerHTML = '';
+  itens.forEach(item => {
+    const el = document.createElement('div');
+    el.className = 'item-lib';
+    el.innerHTML = `
+      <div class="nome">${item.nome}</div>
+      <div class="dur">${item.duracao}s</div>
+      <button onclick="apagarAudio('${item.id}')">✕</button>
+    `;
+    div.appendChild(el);
+
+    const opt = document.createElement('option');
+    opt.value = item.id;
+    opt.textContent = `${item.nome} (${item.duracao}s)`;
+    select.appendChild(opt);
+  });
+}
+
+async function subirVideos() {
+  const arquivos = document.getElementById('input-videos').files;
+  if (arquivos.length === 0) { alert('Escolhe pelo menos 1 vídeo'); return; }
+
+  const formData = new FormData();
+  for (const f of arquivos) formData.append('videos', f);
+
+  document.getElementById('btn-subir-videos').disabled = true;
+  document.getElementById('status-upload-videos').textContent = 'Enviando...';
+
+  try {
+    const resp = await fetch(`/api/biblioteca/${contaAtual}/videos`, { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.erro) {
+      document.getElementById('status-upload-videos').textContent = 'Erro: ' + data.erro;
+    } else {
+      document.getElementById('status-upload-videos').textContent = '✅ Adicionado(s)!';
+      document.getElementById('input-videos').value = '';
+      await carregarVideos();
+    }
+  } catch (e) {
+    document.getElementById('status-upload-videos').textContent = 'Erro de conexão. Tenta de novo.';
+  }
+  document.getElementById('btn-subir-videos').disabled = false;
+}
+
+async function subirAudios() {
+  const arquivos = document.getElementById('input-audios').files;
+  if (arquivos.length === 0) { alert('Escolhe pelo menos 1 áudio'); return; }
+
+  const formData = new FormData();
+  for (const f of arquivos) formData.append('audios', f);
+
+  document.getElementById('btn-subir-audios').disabled = true;
+  document.getElementById('status-upload-audios').textContent = 'Enviando...';
+
+  try {
+    const resp = await fetch(`/api/biblioteca/${contaAtual}/audios`, { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.erro) {
+      document.getElementById('status-upload-audios').textContent = 'Erro: ' + data.erro;
+    } else {
+      document.getElementById('status-upload-audios').textContent = '✅ Adicionado(s)!';
+      document.getElementById('input-audios').value = '';
+      await carregarAudios();
+    }
+  } catch (e) {
+    document.getElementById('status-upload-audios').textContent = 'Erro de conexão. Tenta de novo.';
+  }
+  document.getElementById('btn-subir-audios').disabled = false;
+}
+
+async function apagarVideo(id) {
+  await fetch(`/api/biblioteca/${contaAtual}/videos/` + id, { method: 'DELETE' });
+  await carregarVideos();
+}
+
+async function apagarAudio(id) {
+  await fetch(`/api/biblioteca/${contaAtual}/audios/` + id, { method: 'DELETE' });
+  await carregarAudios();
+}
+
+function alternarLegendaCompilado() {
+  const marcado = document.getElementById('usar-legenda-compilado').checked;
+  document.getElementById('campos-legenda-compilado').style.display = marcado ? 'block' : 'none';
+  if (marcado) atualizarStatusChaveCompilado();
+}
+
+function atualizarStatusChaveCompilado() {
+  const chave = localStorage.getItem('api_key_openai') || '';
+  const div = document.getElementById('status-chave-compilado');
+  if (chave) {
+    div.innerHTML = '✅ Chave OpenAI configurada — a legenda vai ser transcrita automaticamente';
+  } else {
+    div.innerHTML = '⚠️ Precisa configurar a chave OpenAI — <a href="/config" style="color:#ff2d55; font-weight:700;">configurar agora</a>';
+  }
+}
+
+function alternarCorFundoCompilado() {
+  const modelo = document.getElementById('modelo-legenda-compilado').value;
+  document.getElementById('campo-cor-fundo-compilado').style.display = modelo === 'citacao' ? 'block' : 'none';
+}
+
+async function gerarCompilado() {
+  const audioId = document.getElementById('select-audio').value;
+  const quantidade = document.getElementById('quantidade-compilado').value || 1;
+  const usarMusica = document.getElementById('usar-musica-compilado').checked;
+  const usarLegenda = document.getElementById('usar-legenda-compilado').checked;
+  const legendaModelo = document.getElementById('modelo-legenda-compilado').value;
+  const corFundoCitacao = document.getElementById('cor-fundo-citacao-compilado').value;
+  const apiKey = localStorage.getItem('api_key_openai') || '';
+
+  if (!audioId) { alert('Escolhe um áudio da biblioteca'); return; }
+  if (usarLegenda && !apiKey) { alert('Configura sua chave OpenAI na aba Config primeiro'); return; }
+
+  document.getElementById('btn-gerar-compilado').disabled = true;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('download-link').style.display = 'none';
+  document.getElementById('status-text').textContent = 'Iniciando...';
+  document.getElementById('bar-fill').style.width = '5%';
+
+  let resp, data;
+  try {
+    resp = await fetch('/api/compilado/iniciar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conta_id: contaAtual, audio_id: audioId, quantidade, usar_legenda: usarLegenda, usar_musica: usarMusica,
+        legenda_modelo: legendaModelo, cor_fundo_citacao: corFundoCitacao, api_key: apiKey,
+      })
+    });
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Erro de conexão. Tenta de novo.';
+    document.getElementById('btn-gerar-compilado').disabled = false;
+    return;
+  }
+
+  if (data.erro) {
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-gerar-compilado').disabled = false;
+    return;
+  }
+
+  jobId = data.job_id;
+  localStorage.setItem('compilado_job_ativo', jobId);
+  poller = setInterval(checarStatusCompilado, 3000);
+}
+
+async function checarStatusCompilado() {
+  let resp, data;
+  try {
+    resp = await fetch('/api/compilado/status/' + jobId);
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('status-text').textContent = 'Conexão instável... tentando de novo (o processamento continua no servidor).';
+    return;
+  }
+
+  if (data.status === 'transcrevendo') {
+    document.getElementById('status-text').textContent = 'Transcrevendo o áudio pra sincronizar a legenda...';
+    document.getElementById('bar-fill').style.width = '15%';
+  } else if (data.status === 'gerando') {
+    document.getElementById('status-text').textContent = `Montando compilado... (${data.concluidos}/${data.total})`;
+    const pct = Math.min(90, 20 + (data.concluidos / Math.max(data.total,1)) * 70);
+    document.getElementById('bar-fill').style.width = pct + '%';
+  } else if (data.status === 'na_fila') {
+    document.getElementById('status-text').textContent = 'Preparando...';
+  } else if (data.status === 'concluido') {
+    clearInterval(poller);
+    localStorage.removeItem('compilado_job_ativo');
+    document.getElementById('status-text').textContent = `Pronto! ${data.total} vídeo(s) gerado(s).`;
+    document.getElementById('bar-fill').style.width = '100%';
+    const link = document.getElementById('download-link');
+    link.href = '/api/compilado/baixar/' + jobId;
+    link.style.display = 'block';
+    document.getElementById('btn-gerar-compilado').disabled = false;
+  } else if (data.status === 'erro') {
+    clearInterval(poller);
+    localStorage.removeItem('compilado_job_ativo');
+    document.getElementById('status-text').textContent = 'Erro: ' + data.erro;
+    document.getElementById('btn-gerar-compilado').disabled = false;
+  } else if (data.erro || !resp.ok) {
+    clearInterval(poller);
+    localStorage.removeItem('compilado_job_ativo');
+    document.getElementById('status-text').textContent = 'Esse processamento anterior não foi encontrado (pode ter se perdido num reinício do servidor). Pode iniciar um novo.';
+    document.getElementById('btn-gerar-compilado').disabled = false;
+  }
+}
+
+async function verRecentesCompilado() {
+  const div = document.getElementById('lista-recentes');
+  div.style.display = 'block';
+  div.innerHTML = '<p class="ajuda">Buscando...</p>';
+
+  const resp = await fetch('/api/compilado/recentes');
+  const data = await resp.json();
+
+  if (!data.jobs || data.jobs.length === 0) {
+    div.innerHTML = '<p class="ajuda">Nenhum processamento na última hora.</p>';
+    return;
+  }
+
+  div.innerHTML = '';
+  data.jobs.forEach(j => {
+    const item = document.createElement('div');
+    item.className = 'job-recente';
+    let statusTexto = '';
+    if (j.status === 'concluido' && j.recuperado_do_disco) statusTexto = '✅ Pronto (recuperado do disco)';
+    else if (j.status === 'concluido') statusTexto = `✅ Pronto — ${j.total ?? '?'} vídeo(s)`;
+    else if (j.status === 'erro') statusTexto = '❌ Erro';
+    else statusTexto = '⏳ Processando';
+
+    item.innerHTML = `
+      <div>${statusTexto} — há ${j.minutos_atras} min</div>
+      <div style="color:#666; font-size:11px;">ID: ${j.job_id}</div>
+      ${j.status === 'concluido' ? `<a href="/api/compilado/baixar/${j.job_id}">⬇ Baixar ZIP</a>` : ''}
+    `;
+    div.appendChild(item);
+  });
+}
+
+(function retomarJobAtivo() {
+  const jobSalvo = localStorage.getItem('compilado_job_ativo');
+  if (!jobSalvo) return;
+  jobId = jobSalvo;
+  document.getElementById('status-box').style.display = 'block';
+  document.getElementById('status-text').textContent = 'Retomando processamento anterior...';
+  document.getElementById('btn-gerar-compilado').disabled = true;
+  poller = setInterval(checarStatusCompilado, 3000);
+  checarStatusCompilado();
+})();
+
+(async function iniciarPagina() {
+  await carregarContas();
+  await carregarBiblioteca();
+})();
+</script>
+</body>
+</html>
+"""
+
 # ---------------------------------------------------------
 # Configurações
 # ---------------------------------------------------------
@@ -1413,6 +2145,8 @@ def normalizar_url(entrada: str) -> str:
     entrada = entrada.strip()
     if entrada.startswith("http"):
         return entrada
+    # Sem "http", assume que é @usuario do TikTok (Instagram/Facebook sempre
+    # precisam vir como link completo, colado direto do app).
     usuario = entrada.lstrip("@")
     return f"https://www.tiktok.com/@{usuario}"
 
@@ -1432,6 +2166,9 @@ def eh_video_unico(url: str) -> bool:
     return any(re.search(p, url) for p in padroes)
 
 
+# ---------------------------------------------------------
+# Auto-editor: filtro de brilho + CTA no final, em lote
+# ---------------------------------------------------------
 EDITOR_BASE_TMP = Path(tempfile.gettempdir()) / "editor_jobs"
 EDITOR_BASE_TMP.mkdir(exist_ok=True)
 EDITOR_JOBS = {}
@@ -1440,6 +2177,8 @@ MAX_TAMANHO_VIDEO_MB = 150
 FONTE_PADRAO = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONTE_SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
 
+# Modelos visuais de legenda: cada um define posição, cor e fundo.
+# {w}/{h}/{th} são substituídos pelos valores reais do vídeo em tempo de execução.
 MODELOS_LEGENDA = {
     "classico": "fontcolor=white:fontsize=h/22:box=1:boxcolor=black@0.55:boxborderw=10:x=(w-text_w)/2:y=h-th-40",
     "impacto": "fontcolor=yellow:fontsize=h/18:box=1:boxcolor=black@0.7:boxborderw=14:x=(w-text_w)/2:y=50",
@@ -1447,20 +2186,36 @@ MODELOS_LEGENDA = {
     "minimalista": "fontcolor=white@0.9:fontsize=h/28:box=1:boxcolor=black@0.35:boxborderw=6:x=30:y=h-th-30",
 }
 
-FAIXA_Y_INICIO_BOX = "ih*0.42"
-FAIXA_ALTURA_BOX = "ih*0.18"
-FAIXA_Y_INICIO_TXT = "h*0.42"
-FAIXA_ALTURA_TXT = "h*0.18"
+# Modelo "citação": faixa colorida full-width com texto serifado centralizado.
+# Diferente dos outros, precisa de um filtro extra (drawbox) antes do drawtext,
+# por isso é tratado separado dos demais no processar_video_com_cta.
+# IMPORTANTE: drawbox usa as variáveis ih/iw (altura/largura de entrada),
+# já o drawtext usa h/w — são filtros diferentes com convenções diferentes.
+FAIXA_Y_INICIO_BOX = "ih*0.42"     # usado no drawbox
+FAIXA_ALTURA_BOX = "ih*0.18"       # usado no drawbox
+FAIXA_Y_INICIO_TXT = "h*0.42"      # usado no drawtext
+FAIXA_ALTURA_TXT = "h*0.18"        # usado no drawtext
 CORES_FAIXA_CITACAO = {
     "branco": ("white@1", "black"),
     "preto": ("black@1", "white"),
     "vermelho": ("0xD62828@1", "white"),
 }
 
-LIMITE_DIMENSAO_VIDEO = 1920
+
+LIMITE_DIMENSAO_VIDEO = 1920  # baixa a resolução se passar disso, pra processar mais rápido
+
+
+def obter_duracao(path: str) -> float:
+    """Duração em segundos de um vídeo ou áudio, via ffprobe."""
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+           "-of", "csv=p=0", path]
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    texto = out.stdout.strip()
+    return float(texto) if texto else 0.0
 
 
 def probe_video(path: str):
+    """Retorna (largura, altura, fps, tem_audio) de um vídeo via ffprobe."""
     cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0",
            "-show_entries", "stream=width,height,r_frame_rate",
            "-of", "json", path]
@@ -1475,16 +2230,20 @@ def probe_video(path: str):
     out_audio = subprocess.run(cmd_audio, capture_output=True, text=True, timeout=30)
     tem_audio = bool(out_audio.stdout.strip())
 
+    # Reduz vídeos muito grandes (ex: 4K de celular) — acelera bastante o
+    # processamento, já que menos pixels = menos trabalho em todo o pipeline.
     maior_lado = max(w, h)
     if maior_lado > LIMITE_DIMENSAO_VIDEO:
         fator = LIMITE_DIMENSAO_VIDEO / maior_lado
-        w = int(w * fator) // 2 * 2
+        w = int(w * fator) // 2 * 2   # precisa ser par pro codec h264
         h = int(h * fator) // 2 * 2
 
     return w, h, fps, tem_audio
 
 
 def extrair_audio_para_transcricao(input_path: str, saida_path: str):
+    """Extrai só o áudio (comprimido, mono) pra mandar pra API — bem menor
+    que o vídeo inteiro, o que acelera o upload e evita o limite de 25MB."""
     cmd = ["ffmpeg", "-y", "-i", input_path, "-vn", "-ac", "1", "-ar", "16000",
            "-b:a", "64k", saida_path]
     subprocess.run(cmd, capture_output=True, timeout=60, check=True)
@@ -1492,6 +2251,9 @@ def extrair_audio_para_transcricao(input_path: str, saida_path: str):
 
 def transcrever_segmentos(api_key: str, input_path: str, pasta_trabalho: Path,
                            max_duracao_segmento: float = 4.0) -> list:
+    """Transcreve o áudio do vídeo via Whisper (OpenAI) e devolve uma lista
+    de segmentos [{start, end, text}], já quebrados em pedaços curtos (estilo
+    legenda de Reels/TikTok) mesmo quando a fala original vem em frases longas."""
     audio_path = pasta_trabalho / "audio_transcricao.mp3"
     extrair_audio_para_transcricao(input_path, str(audio_path))
 
@@ -1515,6 +2277,8 @@ def transcrever_segmentos(api_key: str, input_path: str, pasta_trabalho: Path,
         duracao_seg = fim - inicio
 
         if duracao_seg > max_duracao_segmento:
+            # Quebra frases longas em pedaços menores, dividindo o tempo
+            # proporcionalmente pelo número de palavras de cada pedaço.
             palavras = texto.split()
             n_partes = max(2, int(duracao_seg // max_duracao_segmento) + 1)
             tam_parte = max(1, len(palavras) // n_partes)
@@ -1538,6 +2302,9 @@ def transcrever_segmentos(api_key: str, input_path: str, pasta_trabalho: Path,
 def _filtro_segmento_texto(idx: int, label_entrada: str, label_saida: str, txt_path: Path,
                             modelo: str, cor_fundo_citacao: str,
                             inicio: float = None, fim: float = None) -> str:
+    """Monta o pedaço do filtro ffmpeg pra desenhar UM trecho de texto,
+    opcionalmente só visível entre 'inicio' e 'fim' segundos (pra legenda
+    automática sincronizada com a fala)."""
     enable_clause = f":enable='between(t,{inicio:.2f},{fim:.2f})'" if inicio is not None else ""
 
     if modelo == "citacao":
@@ -1558,6 +2325,8 @@ def _filtro_segmento_texto(idx: int, label_entrada: str, label_saida: str, txt_p
 
 def construir_filtro_legenda(pasta_trabalho: Path, legenda_modelo: str, cor_fundo_citacao: str,
                               label_inicial: str, texto_manual: str = "", segmentos: list = None):
+    """Monta a cadeia de filtros de legenda: um drawtext por segmento (modo
+    automático, sincronizado no tempo) ou um único drawtext fixo (modo manual)."""
     partes = []
     label_atual = label_inicial
 
@@ -1589,8 +2358,12 @@ def processar_video_com_cta(input_path: str, cta_path: str, brilho: float,
                              cor_fundo_citacao: str = "branco",
                              legenda_segmentos: list = None,
                              pasta_trabalho: Path = None):
+    """Aplica filtro de brilho, legenda opcional (manual ou por segmentos
+    sincronizados), e cola a imagem de CTA no final."""
     w, h, fps, tem_audio = probe_video(input_path)
 
+    # Se o vídeo original é maior que o limite, redimensiona antes de tudo —
+    # isso é o que mais acelera o processamento (menos pixels em cada filtro).
     filtro_video = f"[0:v]scale={w}:{h}[v0scaled];[v0scaled]eq=brightness={brilho}[v0eq]"
     label_apos_brilho = "v0eq"
 
@@ -1610,6 +2383,9 @@ def processar_video_com_cta(input_path: str, cta_path: str, brilho: float,
 
     cmd = ["ffmpeg", "-y", "-i", input_path, "-loop", "1", "-t", str(duracao), "-i", cta_path]
 
+    # "ultrafast" prioriza velocidade — importante no plano gratuito (CPU
+    # bem limitada). O ganho de qualidade de presets mais lentos não compensa
+    # o tempo extra aqui.
     if tem_audio:
         filtro += f";[0:a]apad=pad_dur={duracao}[outa]"
         cmd += ["-filter_complex", filtro, "-map", "[outv]", "-map", "[outa]",
@@ -1625,6 +2401,11 @@ def processar_video_com_cta(input_path: str, cta_path: str, brilho: float,
         raise RuntimeError(resultado.stderr[-800:])
 
 
+# Quantos vídeos processar ao mesmo tempo. No plano Free/Starter (menos de
+# 1 CPU inteiro) o ganho é pequeno — vem principalmente das partes que
+# esperam rede/disco (upload, chamada da API de transcrição), não do
+# processamento de vídeo em si. A partir do plano Standard (1 CPU+) o ganho
+# fica bem mais real. Ajuste esse número conforme o plano do Render.
 EDITOR_WORKERS_PARALELOS = 2
 
 
@@ -1632,6 +2413,8 @@ def _processar_um_video(v: Path, pasta_saida: Path, cta_path: str, brilho: float
                          duracao: float, legenda_texto: str, legenda_modelo: str,
                          cor_fundo_citacao: str, modo_legenda: str, api_key: str,
                          job: dict, lock: threading.Lock):
+    """Processa 1 vídeo isoladamente — cada vídeo ganha sua própria pasta de
+    trabalho temporária, pra não colidir com os outros rodando em paralelo."""
     pasta_temp_video = pasta_saida.parent / f"tmp_{v.stem}"
     pasta_temp_video.mkdir(exist_ok=True)
 
@@ -1643,7 +2426,7 @@ def _processar_um_video(v: Path, pasta_saida: Path, cta_path: str, brilho: float
             with lock:
                 job["arquivo_atual"] = f"transcrevendo {v.name}"
             legenda_segmentos = transcrever_segmentos(api_key, str(v), pasta_temp_video)
-            texto_para_video = ""
+            texto_para_video = ""  # usa os segmentos, não texto fixo
 
         saida = pasta_saida / f"editado_{v.stem}.mp4"
         processar_video_com_cta(
@@ -1711,6 +2494,10 @@ def editor_job_worker(job_id: str, pasta_videos: Path, cta_path: str, brilho: fl
     shutil.rmtree(pasta_videos, ignore_errors=True)
 
 
+# ---------------------------------------------------------
+# Gerador IA: copies + imagens via OpenAI, cortadas em 9:16,
+# com opção de virar reels animados com som ambiente
+# ---------------------------------------------------------
 GERADOR_BASE_TMP = Path(tempfile.gettempdir()) / "gerador_jobs"
 GERADOR_BASE_TMP.mkdir(exist_ok=True)
 GERADOR_JOBS = {}
@@ -1729,10 +2516,14 @@ PROMPTS_ESTILO = {
     ),
 }
 
-MAX_IMAGENS_ANALISE_ESTILO = 10
+MAX_IMAGENS_ANALISE_ESTILO = 10  # cap de imagens analisadas por chamada (custo/tamanho da requisição)
 
 
 def analisar_estilo_visual(api_key: str, imagens_bytes: list) -> str:
+    """Manda as imagens de referência do usuário pro GPT-4o (visão) e pede
+    uma descrição REUTILIZÁVEL do padrão visual/fotográfico — explicitamente
+    sem reproduzir texto, marca ou logotipo específico das imagens originais,
+    só o estilo (composição, luz, materiais, enquadramento)."""
     conteudo = [{
         "type": "text",
         "text": (
@@ -1778,6 +2569,9 @@ MAX_IMAGENS_TRANSCRICAO_COPY = 10
 
 
 def transcrever_copies_de_imagens(imagens_bytes: list) -> list:
+    """Lê o texto de cada print via OCR local (Tesseract) — de graça, sem
+    chamar nenhuma API paga. Faz uma limpeza básica no texto extraído,
+    já que OCR de print de rede social pode pegar ruído (curtidas, ícones)."""
     textos = []
     for img_bytes in imagens_bytes[:MAX_IMAGENS_TRANSCRICAO_COPY]:
         try:
@@ -1786,6 +2580,8 @@ def transcrever_copies_de_imagens(imagens_bytes: list) -> list:
         except Exception:
             continue
 
+        # Limpeza básica: remove linhas muito curtas/isoladas (comuns em
+        # ruído de interface: números de likes, hora, ícones mal lidos)
         linhas = [l.strip() for l in texto_bruto.split("\n")]
         linhas_uteis = [l for l in linhas if len(l) > 3]
         texto_limpo = " ".join(linhas_uteis).strip()
@@ -1796,7 +2592,10 @@ def transcrever_copies_de_imagens(imagens_bytes: list) -> list:
     return textos
 
 
+
 def chamar_openai_copies(api_key: str, funil: str, exemplos: list, quantidade: int) -> list:
+    """Pede pra OpenAI gerar N copies (título/apoio/cta) originais, inspiradas
+    no funil e nos exemplos de referência fornecidos pelo usuário."""
     exemplos_txt = "\n".join(f"- {e}" for e in exemplos[:15]) if exemplos else "(nenhum exemplo fornecido ainda)"
 
     prompt_sistema = (
@@ -1841,6 +2640,8 @@ def chamar_openai_copies(api_key: str, funil: str, exemplos: list, quantidade: i
 
 
 def chamar_openai_imagem_grade(api_key: str, estilo: str, estilo_customizado: str = "") -> Image.Image:
+    """Pede pra OpenAI gerar 1 imagem retrato dividida em grade 2x2 (4 cenas
+    diferentes, sem texto), pra depois cortar em 4 imagens 9:16 separadas."""
     if estilo == "personalizado" and estilo_customizado:
         base_prompt = estilo_customizado
     else:
@@ -1880,6 +2681,7 @@ def chamar_openai_imagem_grade(api_key: str, estilo: str, estilo_customizado: st
 
 
 def cortar_grade_em_quatro(img: Image.Image) -> list:
+    """Corta uma imagem 1024x1536 (grade 2x2) em 4 imagens 9:16 (1080x1920)."""
     w, h = img.size
     qw, qh = w // 2, h // 2
 
@@ -1915,6 +2717,8 @@ def _quebrar_texto(draw, texto, fonte, largura_max):
 
 def aplicar_texto_quote(img: Image.Image, titulo: str, apoio: str, cta: str,
                          cor_destaque=(255, 45, 85)) -> Image.Image:
+    """Sobrepõe título + apoio (topo) e CTA (base) na imagem, com gradientes
+    escuros por trás pra garantir legibilidade em qualquer fundo."""
     img = img.convert("RGBA")
     w, h = img.size
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -1959,6 +2763,8 @@ def aplicar_texto_quote(img: Image.Image, titulo: str, apoio: str, cta: str,
 
 
 def gerar_som_ambiente(caminho_saida: str, duracao: float = 6.0):
+    """Sintetiza um som ambiente suave (acorde de 3 tons com fade), sem
+    depender de nenhuma API — usado como música de fundo dos reels."""
     cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", f"sine=frequency=196:duration={duracao}",
@@ -1973,13 +2779,14 @@ def gerar_som_ambiente(caminho_saida: str, duracao: float = 6.0):
 
 
 def criar_reel_de_imagem(caminho_imagem: str, caminho_audio: str, caminho_saida: str, duracao: float = 6.0):
+    """Anima a imagem com um zoom lento (Ken Burns) e junta com o som ambiente."""
     frames = int(duracao * 25)
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", caminho_imagem,
         "-i", caminho_audio,
         "-vf", f"zoompan=z='min(zoom+0.0008,1.15)':d={frames}:s=1080x1920:fps=25",
-        "-t", str(duracao),
+             "-t", str(duracao),
         "-c:v", "libx264", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-shortest",
         caminho_saida,
@@ -2035,7 +2842,7 @@ def gerador_job_worker(job_id: str, api_key: str, funil: str, exemplos: list,
                     criar_reel_de_imagem(str(img_path), str(audio_path), str(reel_path), duracao=6.0)
                     arquivos_finais.append(reel_path)
                 except Exception:
-                    pass
+                    pass  # se um reel falhar, mantém a imagem estática e segue
                 job["concluidos_reels"] += 1
 
         zip_path = GERADOR_BASE_TMP / f"{job_id}.zip"
@@ -2060,6 +2867,7 @@ def gerador_job_worker(job_id: str, api_key: str, funil: str, exemplos: list,
         job["status"] = "erro"
         job["erro"] = str(e)
     finally:
+        # Mantém as imagens/vídeos zipados, mas limpa os arquivos soltos
         for f in pasta_job.glob("*"):
             if f.suffix != ".zip":
                 try:
@@ -2085,6 +2893,344 @@ def contar_videos_conta(url: str) -> int:
     return len(list(entradas))
 
 
+# ---------------------------------------------------------
+# Biblioteca: vídeos curtos + áudios guardados, pra montar
+# compilados aleatórios com transição, cortados no tamanho do
+# áudio, com legenda automática sincronizada.
+# ---------------------------------------------------------
+BIBLIOTECA_DIR = Path(tempfile.gettempdir()) / "biblioteca"
+BIBLIOTECA_DIR.mkdir(parents=True, exist_ok=True)
+
+COMPILADO_BASE_TMP = Path(tempfile.gettempdir()) / "compilado_jobs"
+COMPILADO_BASE_TMP.mkdir(exist_ok=True)
+COMPILADO_JOBS = {}
+
+MAX_CLIPES_BIBLIOTECA = 100
+MAX_AUDIOS_BIBLIOTECA = 20
+MAX_MUSICAS_BIBLIOTECA = 20
+MAX_HOOKS_BIBLIOTECA = 50
+MAX_CTAS_BIBLIOTECA = 50
+TRANSICAO_DURACAO = 0.4  # segundos de sobreposição entre um clipe e outro
+RESOLUCAO_COMPILADO = (1080, 1920)  # vertical, padrão Reels/TikTok
+VOLUME_AUDIO_PRINCIPAL = 1.7  # +70% no áudio principal (voz)
+VOLUME_MUSICA_FUNDO = 0.2     # ~20% de volume na música de fundo
+
+
+def _id_conta_seguro(conta_id: str) -> str:
+    return secure_filename((conta_id or "").strip().lower()) or "padrao"
+
+
+def _pasta_conta(conta_id: str, tipo: str) -> Path:
+    """Retorna (criando se preciso) a pasta de vídeos/áudios/músicas de UMA
+    conta específica — cada conta tem sua própria biblioteca isolada, pra
+    não misturar material entre contas diferentes."""
+    conta_segura = _id_conta_seguro(conta_id)
+    pasta = BIBLIOTECA_DIR / conta_segura / tipo
+    pasta.mkdir(parents=True, exist_ok=True)
+    return pasta
+
+
+def _listar_contas() -> list:
+    """Lista todas as contas que já têm alguma biblioteca criada, com a
+    contagem de itens de cada uma."""
+    if not BIBLIOTECA_DIR.exists():
+        return []
+    contas = []
+    for pasta_conta in sorted(BIBLIOTECA_DIR.iterdir()):
+        if not pasta_conta.is_dir():
+            continue
+        n_videos = len(list((pasta_conta / "videos").glob("*"))) if (pasta_conta / "videos").exists() else 0
+        n_audios = len(list((pasta_conta / "audios").glob("*"))) if (pasta_conta / "audios").exists() else 0
+        n_musicas = len(list((pasta_conta / "musicas").glob("*"))) if (pasta_conta / "musicas").exists() else 0
+        n_hooks = len(list((pasta_conta / "hooks").glob("*"))) if (pasta_conta / "hooks").exists() else 0
+        n_ctas = len(list((pasta_conta / "ctas").glob("*"))) if (pasta_conta / "ctas").exists() else 0
+        contas.append({
+            "id": pasta_conta.name,
+            "videos": n_videos,
+            "audios": n_audios,
+            "musicas": n_musicas,
+            "hooks": n_hooks,
+            "ctas": n_ctas,
+        })
+    return contas
+
+
+def _listar_biblioteca(pasta: Path) -> list:
+    """Lista os arquivos guardados numa pasta da biblioteca, com duração."""
+    itens = []
+    for f in sorted(pasta.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
+        if f.is_file() and not f.name.endswith(".json"):
+            try:
+                duracao = obter_duracao(str(f))
+            except Exception:
+                duracao = 0.0
+            itens.append({
+                "id": f.stem,
+                "nome": f.name,
+                "duracao": round(duracao, 1),
+                "tamanho_mb": round(f.stat().st_size / (1024 * 1024), 2),
+            })
+    return itens
+
+
+def montar_compilado(clipes_disponiveis: list, duracao_alvo: float, pasta_trabalho: Path,
+                      transicao: float = TRANSICAO_DURACAO,
+                      hooks_disponiveis: list = None, ctas_disponiveis: list = None) -> tuple:
+    """Monta a ordem final dos clipes — [hook (se tiver)] + [vídeos do meio,
+    sorteados até cobrir a duração] + [cta (se tiver)] — e a cadeia de
+    filtros xfade (transição) entre eles. Devolve
+    (escolhidos, partes_filtro, label_final, duracao_total_estimada)."""
+    if not clipes_disponiveis and not hooks_disponiveis and not ctas_disponiveis:
+        raise ValueError("Nenhum vídeo na biblioteca ainda.")
+
+    def duracao_segura(caminho) -> float:
+        try:
+            d = obter_duracao(str(caminho))
+        except Exception:
+            return 0.0
+        return d if d and d > 0 else 0.0
+
+    escolhidos = []  # ordem final: [hook?] + [meio...] + [cta?], cada item (path, duracao)
+    total = 0.0
+
+    def adicionar(caminho, dur):
+        nonlocal total
+        incremento = dur if not escolhidos else (dur - transicao)
+        escolhidos.append((caminho, dur))
+        total += incremento
+
+    # 1) Hook sempre primeiro, se a conta tiver algum
+    if hooks_disponiveis:
+        hook = random.choice(hooks_disponiveis)
+        dur_hook = duracao_segura(hook)
+        if dur_hook > 0:
+            adicionar(hook, dur_hook)
+
+    # 2) Escolhe o CTA agora (mas só adiciona no final) — precisamos saber a
+    # duração dele já pra calcular quanto os vídeos do meio ainda precisam cobrir.
+    cta_escolhido = None
+    dur_cta = 0.0
+    if ctas_disponiveis:
+        cta_escolhido = random.choice(ctas_disponiveis)
+        dur_cta = duracao_segura(cta_escolhido)
+
+    def contribuicao_cta() -> float:
+        if not (cta_escolhido and dur_cta > 0):
+            return 0.0
+        return dur_cta if not escolhidos else (dur_cta - transicao)
+
+    # 3) Preenche o meio com vídeos sorteados (repete se precisar), cuidando
+    # pra NUNCA ultrapassar o espaço disponível — senão o corte final (-t)
+    # cortaria o CTA fora, já que ele vem sempre por último. Se um clipe não
+    # couber inteiro, ele é encurtado (trim) só o suficiente pra fechar a conta.
+    pool = list(clipes_disponiveis) if clipes_disponiveis else []
+    if pool:
+        random.shuffle(pool)
+        i = 0
+        tentativas = 0
+        while tentativas < 200:
+            limite = duracao_alvo - contribuicao_cta()
+            if total >= limite - 0.05:
+                break
+            if i >= len(pool):
+                random.shuffle(pool)
+                i = 0
+            caminho = pool[i]
+            i += 1
+            tentativas += 1
+            dur = duracao_segura(caminho)
+            if dur <= 0:
+                continue
+            incremento_cheio = dur if not escolhidos else (dur - transicao)
+            if total + incremento_cheio <= limite + 0.05:
+                adicionar(caminho, dur)
+            else:
+                # Não cabe inteiro — encurta só o suficiente pra preencher
+                # exatamente o espaço que falta, e para por aqui.
+                espaco_restante = limite - total
+                duracao_truncada = espaco_restante if not escolhidos else (espaco_restante + transicao)
+                duracao_truncada = max(0.6, min(duracao_truncada, dur))
+                adicionar(caminho, duracao_truncada)
+                break
+
+    # 4) CTA sempre por último, se a conta tiver algum
+    if cta_escolhido and dur_cta > 0:
+        adicionar(cta_escolhido, dur_cta)
+
+    if not escolhidos:
+        raise ValueError("Não consegui medir a duração de nenhum vídeo da biblioteca (hook, meio ou CTA).")
+
+    w, h = RESOLUCAO_COMPILADO
+    partes_filtro = []
+    for idx, (_caminho, _dur) in enumerate(escolhidos):
+        partes_filtro.append(
+            f"[{idx}:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h},setsar=1,fps=30,format=yuv420p[vs{idx}]"
+        )
+
+    label_atual = "vs0"
+    acumulado = escolhidos[0][1]
+    for idx in range(1, len(escolhidos)):
+        dur_clipe = escolhidos[idx][1]
+        offset = max(0.0, acumulado - transicao)
+        label_saida = f"vx{idx}"
+        partes_filtro.append(
+            f"[{label_atual}][vs{idx}]xfade=transition=fade:duration={transicao:.2f}:"
+            f"offset={offset:.2f}[{label_saida}]"
+        )
+        label_atual = label_saida
+        acumulado = offset + dur_clipe
+
+    return escolhidos, partes_filtro, label_atual, acumulado
+
+
+def gerar_um_compilado(clipes_disponiveis: list, audio_path: str, duracao_audio: float,
+                        segmentos_legenda: list, usar_legenda: bool, legenda_modelo: str,
+                        cor_fundo_citacao: str, pasta_trabalho: Path, output_path: str,
+                        musica_path: str = None, hooks_disponiveis: list = None,
+                        ctas_disponiveis: list = None):
+    """Gera 1 vídeo compilado: [hook] + vídeos do meio sorteados (com
+    transição) + [cta], corta no tamanho do áudio escolhido, cola o áudio
+    (mais alto) + música de fundo opcional (mais baixa), e adiciona legenda
+    se pedido."""
+    escolhidos, partes_filtro, label_video, _duracao_estimada = montar_compilado(
+        clipes_disponiveis, duracao_audio, pasta_trabalho,
+        hooks_disponiveis=hooks_disponiveis, ctas_disponiveis=ctas_disponiveis,
+    )
+
+    if usar_legenda and segmentos_legenda:
+        pedacos, label_video = construir_filtro_legenda(
+            pasta_trabalho, legenda_modelo, cor_fundo_citacao,
+            label_inicial=label_video, segmentos=segmentos_legenda,
+        )
+        partes_filtro.append(pedacos)
+
+    cmd = ["ffmpeg", "-y"]
+    for caminho, dur_usada in escolhidos:
+        # "-t" antes de cada "-i" limita esse clipe específico à duração que
+        # a montagem decidiu usar (só é diferente da duração real quando o
+        # clipe foi encurtado pra caber certinho antes do CTA).
+        cmd += ["-t", f"{dur_usada:.2f}", "-i", str(caminho)]
+    cmd += ["-i", audio_path]
+    indice_audio = len(escolhidos)
+
+    # Áudio principal (voz) mais alto que o original; limiter no final evita
+    # estourar/cortar o som quando o volume é aumentado.
+    partes_filtro.append(f"[{indice_audio}:a]volume={VOLUME_AUDIO_PRINCIPAL}[avoz]")
+    label_audio = "avoz"
+
+    if musica_path:
+        # "-stream_loop -1" repete a música quantas vezes precisar pra cobrir
+        # a duração toda, mesmo que ela seja mais curta que o áudio principal.
+        cmd += ["-stream_loop", "-1", "-i", musica_path]
+        indice_musica = indice_audio + 1
+        partes_filtro.append(f"[{indice_musica}:a]volume={VOLUME_MUSICA_FUNDO}[amus]")
+        partes_filtro.append(f"[avoz][amus]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amix0]")
+        partes_filtro.append("[amix0]alimiter=limit=0.95[aout]")
+        label_audio = "aout"
+    else:
+        partes_filtro.append("[avoz]alimiter=limit=0.95[aout]")
+        label_audio = "aout"
+
+    filtro_completo = ";".join(partes_filtro)
+
+    cmd += [
+        "-filter_complex", filtro_completo,
+        "-map", f"[{label_video}]",
+        "-map", f"[{label_audio}]",
+        "-t", str(duracao_audio),
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-c:a", "aac", "-shortest",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+
+    resultado = subprocess.run(cmd, capture_output=True, text=True, timeout=280)
+    if resultado.returncode != 0:
+        raise RuntimeError(resultado.stderr[-800:])
+
+
+def compilado_job_worker(job_id: str, conta_id: str, audio_path: str, quantidade: int,
+                          usar_legenda: bool, legenda_modelo: str, cor_fundo_citacao: str,
+                          api_key: str, usar_musica: bool = False):
+    job = COMPILADO_JOBS[job_id]
+    pasta_job = COMPILADO_BASE_TMP / job_id
+    pasta_job.mkdir(exist_ok=True)
+
+    try:
+        pasta_videos_conta = _pasta_conta(conta_id, "videos")
+        clipes_disponiveis = [pasta_videos_conta / f["nome"] for f in _listar_biblioteca(pasta_videos_conta)]
+
+        pasta_hooks_conta = _pasta_conta(conta_id, "hooks")
+        hooks_disponiveis = [pasta_hooks_conta / f["nome"] for f in _listar_biblioteca(pasta_hooks_conta)]
+
+        pasta_ctas_conta = _pasta_conta(conta_id, "ctas")
+        ctas_disponiveis = [pasta_ctas_conta / f["nome"] for f in _listar_biblioteca(pasta_ctas_conta)]
+
+        if not clipes_disponiveis and not hooks_disponiveis and not ctas_disponiveis:
+            job["status"] = "erro"
+            job["erro"] = "A biblioteca dessa conta está vazia (sem vídeos, hooks ou ctas). Sobe alguns clipes primeiro."
+            return
+
+        musicas_disponiveis = []
+        if usar_musica:
+            pasta_musicas_conta = _pasta_conta(conta_id, "musicas")
+            musicas_disponiveis = [pasta_musicas_conta / f["nome"] for f in _listar_biblioteca(pasta_musicas_conta)]
+
+        duracao_audio = obter_duracao(audio_path)
+        if duracao_audio <= 0:
+            job["status"] = "erro"
+            job["erro"] = "Não consegui ler a duração desse áudio."
+            return
+
+        segmentos_legenda = None
+        if usar_legenda:
+            if not api_key:
+                job["status"] = "erro"
+                job["erro"] = "Configura sua chave OpenAI na aba Config pra usar legenda automática."
+                return
+            job["status"] = "transcrevendo"
+            segmentos_legenda = transcrever_segmentos(api_key, audio_path, pasta_job)
+
+        job["status"] = "gerando"
+        job["total"] = quantidade
+        job["concluidos"] = 0
+        gerados = []
+
+        for i in range(quantidade):
+            saida = pasta_job / f"compilado_{i+1:02d}.mp4"
+            musica_escolhida = str(random.choice(musicas_disponiveis)) if musicas_disponiveis else None
+            gerar_um_compilado(
+                clipes_disponiveis, audio_path, duracao_audio,
+                segmentos_legenda, usar_legenda, legenda_modelo, cor_fundo_citacao,
+                pasta_job, str(saida), musica_path=musica_escolhida,
+                hooks_disponiveis=hooks_disponiveis, ctas_disponiveis=ctas_disponiveis,
+            )
+            gerados.append(saida)
+            job["concluidos"] += 1
+
+        zip_path = COMPILADO_BASE_TMP / f"{job_id}.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in gerados:
+                zf.write(f, arcname=f.name)
+
+        job["status"] = "concluido"
+        job["zip_path"] = str(zip_path)
+        job["total"] = len(gerados)
+        job["criado_em"] = time.time()
+
+    except Exception as e:
+        job["status"] = "erro"
+        job["erro"] = str(e)
+    finally:
+        for f in pasta_job.glob("*"):
+            if f.suffix != ".zip":
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+
+
 def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int, ordem: str = "recentes"):
     job = JOBS[job_id]
     pasta = BASE_TMP / job_id
@@ -2099,6 +3245,9 @@ def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int, ordem: str = "
 
     ydl_opts = {
         "outtmpl": str(pasta / "%(upload_date)s_%(id)s_%(title).50s.%(ext)s"),
+        # "best" pega um único arquivo já pronto (vídeo+áudio juntos) quando
+        # disponível, evitando o passo extra de merge via ffmpeg — mais rápido
+        # que "bestvideo+bestaudio" na maioria dos vídeos do TikTok.
         "format": "best",
         "ignoreerrors": True,
         "progress_hooks": [hook],
@@ -2109,16 +3258,20 @@ def job_worker(job_id: str, url_alvo: str, inicio: int, fim: int, ordem: str = "
         "retries": 3,
     }
 
+    # Só aplica intervalo quando for uma conta/perfil (playlist).
+    # Vídeo único não usa esses parâmetros.
     if not eh_video_unico(url_alvo):
         inicio_real, fim_real = inicio, fim
         if ordem == "antigos":
             try:
                 total = contar_videos_conta(url_alvo)
                 if total > 0:
+                    # Vídeo 1 (mais antigo) = posição 'total' na listagem do
+                    # TikTok (que vem do mais recente pro mais antigo).
                     inicio_real = max(1, total - fim + 1)
                     fim_real = max(1, total - inicio + 1)
             except Exception:
-                pass
+                pass  # se a contagem falhar, cai pro comportamento padrão (mais recentes)
         ydl_opts["playliststart"] = inicio_real
         ydl_opts["playlistend"] = fim_real
 
@@ -2247,7 +3400,7 @@ def editor_iniciar():
         brilho_bruto = float(request.form.get("brilho", 0))
     except (TypeError, ValueError):
         brilho_bruto = 0
-    brilho = max(-1.0, min(brilho_bruto / 100.0, 1.0))
+    brilho = max(-1.0, min(brilho_bruto / 100.0, 1.0))  # escala -50..50 -> -0.5..0.5
 
     try:
         duracao = float(request.form.get("duracao", 5))
@@ -2262,7 +3415,7 @@ def editor_iniciar():
     if usar_legenda and modo_legenda == "automatica":
         if not api_key:
             return jsonify({"erro": "Configura sua chave OpenAI na aba Config primeiro"}), 400
-        legenda_texto = "__AUTO__"
+        legenda_texto = "__AUTO__"  # sinaliza pro worker que é modo automático
     else:
         legenda_texto = request.form.get("texto_legenda", "").strip() if usar_legenda else ""
 
@@ -2323,6 +3476,7 @@ def editor_status(job_id):
 
 @app.route("/api/editor/baixar/<job_id>")
 def editor_baixar(job_id):
+    # job_id vem da URL — valida o formato antes de usar em caminho de arquivo
     if not re.fullmatch(r"[a-f0-9]{8,32}", job_id):
         return jsonify({"erro": "id inválido"}), 400
 
@@ -2330,6 +3484,8 @@ def editor_baixar(job_id):
     if job and job["status"] == "concluido":
         return send_file(job["zip_path"], as_attachment=True, download_name=f"editados_{job_id}.zip")
 
+    # Não está mais na memória (ex: processo reiniciou) — tenta achar o
+    # zip direto no disco, que sobrevive a reinícios.
     zip_path = EDITOR_BASE_TMP / f"{job_id}.zip"
     if zip_path.exists():
         return send_file(str(zip_path), as_attachment=True, download_name=f"editados_{job_id}.zip")
@@ -2339,6 +3495,10 @@ def editor_baixar(job_id):
 
 @app.route("/api/editor/recentes")
 def editor_recentes():
+    """Lista os processamentos das últimas horas — serve pra recuperar um
+    job cuja tela (ou até a memória do servidor) foi perdida. Combina o que
+    está em memória com uma varredura direta dos arquivos .zip no disco,
+    porque o disco sobrevive a reinícios do processo, a memória não."""
     agora = time.time()
     recentes = {}
 
@@ -2354,6 +3514,8 @@ def editor_recentes():
             "minutos_atras": round(idade / 60, 1),
         }
 
+    # Varre o disco por .zip que a memória não conhece mais (ex: processo
+    # reiniciou depois que o job terminou, mas antes de você conferir).
     for zip_path in EDITOR_BASE_TMP.glob("*.zip"):
         jid = zip_path.stem
         if jid in recentes:
@@ -2410,7 +3572,7 @@ def gerador_iniciar():
     except (TypeError, ValueError):
         quantidade = 8
     quantidade = max(4, min(quantidade, MAX_IMAGENS_GERADOR))
-    quantidade = (quantidade + 3) // 4 * 4
+    quantidade = (quantidade + 3) // 4 * 4  # arredonda pra múltiplo de 4
 
     job_id = uuid.uuid4().hex[:12]
     GERADOR_JOBS[job_id] = {
@@ -2476,6 +3638,8 @@ def gerador_transcrever_copies():
 def gerador_status(job_id):
     job = GERADOR_JOBS.get(job_id)
     if not job:
+        # Não está mais na memória — mas se o zip existe no disco, o
+        # trabalho terminou antes do processo reiniciar; informa concluído.
         if re.fullmatch(r"[a-f0-9]{8,32}", job_id) and (GERADOR_BASE_TMP / f"{job_id}.zip").exists():
             return jsonify({"status": "concluido", "concluidos": None, "concluidos_reels": None, "total": None})
         return jsonify({"erro": "job não encontrado"}), 404
@@ -2508,6 +3672,8 @@ def gerador_baixar(job_id):
 
 @app.route("/api/gerador/recentes")
 def gerador_recentes():
+    """Lista processamentos das últimas horas, combinando memória + disco
+    (o disco sobrevive a reinícios do processo, a memória não)."""
     agora = time.time()
     recentes = {}
 
@@ -2537,6 +3703,311 @@ def gerador_recentes():
             "recuperado_do_disco": True,
         }
 
+    lista = sorted(recentes.values(), key=lambda x: x["minutos_atras"])
+    return jsonify({"jobs": lista})
+
+
+@app.route("/biblioteca")
+def biblioteca_page():
+    return PAGINA_BIBLIOTECA_HTML
+
+
+@app.route("/api/biblioteca/contas", methods=["GET", "POST"])
+def biblioteca_contas():
+    if request.method == "GET":
+        return jsonify({"contas": _listar_contas()})
+
+    data = request.get_json(force=True)
+    nome = data.get("nome", "").strip()
+    if not nome:
+        return jsonify({"erro": "Digite um nome pra conta"}), 400
+
+    conta_id = _id_conta_seguro(nome)
+    for tipo in ("videos", "audios", "musicas", "hooks", "ctas"):
+        _pasta_conta(conta_id, tipo)
+
+    return jsonify({"contas": _listar_contas(), "conta_criada": conta_id})
+
+
+@app.route("/api/biblioteca/contas/<conta_id>", methods=["DELETE"])
+def biblioteca_contas_apagar(conta_id):
+    conta_segura = _id_conta_seguro(conta_id)
+    pasta = BIBLIOTECA_DIR / conta_segura
+    if pasta.exists():
+        shutil.rmtree(pasta, ignore_errors=True)
+    return jsonify({"contas": _listar_contas()})
+
+
+@app.route("/api/biblioteca/<conta_id>/videos", methods=["GET", "POST"])
+def biblioteca_videos(conta_id):
+    pasta = _pasta_conta(conta_id, "videos")
+    if request.method == "GET":
+        return jsonify({"itens": _listar_biblioteca(pasta)})
+
+    arquivos = request.files.getlist("videos")
+    if not arquivos:
+        return jsonify({"erro": "Envie pelo menos 1 vídeo"}), 400
+
+    existentes = list(pasta.glob("*"))
+    if len(existentes) + len(arquivos) > MAX_CLIPES_BIBLIOTECA:
+        return jsonify({"erro": f"Limite de {MAX_CLIPES_BIBLIOTECA} clipes na biblioteca"}), 400
+
+    for f in arquivos:
+        nome_seguro = secure_filename(f.filename or "clipe.mp4")
+        destino = pasta / f"{uuid.uuid4().hex[:10]}_{nome_seguro}"
+        f.save(str(destino))
+
+    return jsonify({"itens": _listar_biblioteca(pasta)})
+
+
+@app.route("/api/biblioteca/<conta_id>/videos/<item_id>", methods=["DELETE"])
+def biblioteca_videos_apagar(conta_id, item_id):
+    if not re.fullmatch(r"[a-zA-Z0-9_.\-]+", item_id):
+        return jsonify({"erro": "id inválido"}), 400
+    pasta = _pasta_conta(conta_id, "videos")
+    for f in pasta.glob(f"{item_id}*"):
+        f.unlink()
+    return jsonify({"itens": _listar_biblioteca(pasta)})
+
+
+@app.route("/api/biblioteca/<conta_id>/hooks", methods=["GET", "POST"])
+def biblioteca_hooks(conta_id):
+    pasta = _pasta_conta(conta_id, "hooks")
+    if request.method == "GET":
+        return jsonify({"itens": _listar_biblioteca(pasta)})
+
+    arquivos = request.files.getlist("hooks")
+    if not arquivos:
+        return jsonify({"erro": "Envie pelo menos 1 vídeo de abertura (hook)"}), 400
+
+    existentes = list(pasta.glob("*"))
+    if len(existentes) + len(arquivos) > MAX_HOOKS_BIBLIOTECA:
+        return jsonify({"erro": f"Limite de {MAX_HOOKS_BIBLIOTECA} hooks na biblioteca"}), 400
+
+    for f in arquivos:
+        nome_seguro = secure_filename(f.filename or "hook.mp4")
+        destino = pasta / f"{uuid.uuid4().hex[:10]}_{nome_seguro}"
+        f.save(str(destino))
+
+    return jsonify({"itens": _listar_biblioteca(pasta)})
+
+
+@app.route("/api/biblioteca/<conta_id>/hooks/<item_id>", methods=["DELETE"])
+def biblioteca_hooks_apagar(conta_id, item_id):
+    if not re.fullmatch(r"[a-zA-Z0-9_.\-]+", item_id):
+        return jsonify({"erro": "id inválido"}), 400
+    pasta = _pasta_conta(conta_id, "hooks")
+    for f in pasta.glob(f"{item_id}*"):
+        f.unlink()
+    return jsonify({"itens": _listar_biblioteca(pasta)})
+
+
+@app.route("/api/biblioteca/<conta_id>/ctas", methods=["GET", "POST"])
+def biblioteca_ctas(conta_id):
+    pasta = _pasta_conta(conta_id, "ctas")
+    if request.method == "GET":
+        return jsonify({"itens": _listar_biblioteca(pasta)})
+
+    arquivos = request.files.getlist("ctas")
+    if not arquivos:
+        return jsonify({"erro": "Envie pelo menos 1 vídeo de encerramento (cta)"}), 400
+
+    existentes = list(pasta.glob("*"))
+    if len(existentes) + len(arquivos) > MAX_CTAS_BIBLIOTECA:
+        return jsonify({"erro": f"Limite de {MAX_CTAS_BIBLIOTECA} ctas na biblioteca"}), 400
+
+    for f in arquivos:
+        nome_seguro = secure_filename(f.filename or "cta.mp4")
+        destino = pasta / f"{uuid.uuid4().hex[:10]}_{nome_seguro}"
+        f.save(str(destino))
+
+    return jsonify({"itens": _listar_biblioteca(pasta)})
+
+
+@app.route("/api/biblioteca/<conta_id>/ctas/<item_id>", methods=["DELETE"])
+def biblioteca_ctas_apagar(conta_id, item_id):
+    if not re.fullmatch(r"[a-zA-Z0-9_.\-]+", item_id):
+        return jsonify({"erro": "id inválido"}), 400
+    pasta = _pasta_conta(conta_id, "ctas")
+    for f in pasta.glob(f"{item_id}*"):
+        f.unlink()
+    return jsonify({"itens": _listar_biblioteca(pasta)})
+
+
+@app.route("/api/biblioteca/<conta_id>/audios", methods=["GET", "POST"])
+def biblioteca_audios(conta_id):
+    pasta = _pasta_conta(conta_id, "audios")
+    if request.method == "GET":
+        return jsonify({"itens": _listar_biblioteca(pasta)})
+
+    arquivos = request.files.getlist("audios")
+    if not arquivos:
+        return jsonify({"erro": "Envie pelo menos 1 áudio"}), 400
+
+    existentes = list(pasta.glob("*"))
+    if len(existentes) + len(arquivos) > MAX_AUDIOS_BIBLIOTECA:
+        return jsonify({"erro": f"Limite de {MAX_AUDIOS_BIBLIOTECA} áudios na biblioteca"}), 400
+
+    for f in arquivos:
+        nome_seguro = secure_filename(f.filename or "audio.mp3")
+        destino = pasta / f"{uuid.uuid4().hex[:10]}_{nome_seguro}"
+        f.save(str(destino))
+
+    return jsonify({"itens": _listar_biblioteca(pasta)})
+
+
+@app.route("/api/biblioteca/<conta_id>/audios/<item_id>", methods=["DELETE"])
+def biblioteca_audios_apagar(conta_id, item_id):
+    if not re.fullmatch(r"[a-zA-Z0-9_.\-]+", item_id):
+        return jsonify({"erro": "id inválido"}), 400
+    pasta = _pasta_conta(conta_id, "audios")
+    for f in pasta.glob(f"{item_id}*"):
+        f.unlink()
+    return jsonify({"itens": _listar_biblioteca(pasta)})
+
+
+@app.route("/api/biblioteca/<conta_id>/musicas", methods=["GET", "POST"])
+def biblioteca_musicas(conta_id):
+    pasta = _pasta_conta(conta_id, "musicas")
+    if request.method == "GET":
+        return jsonify({"itens": _listar_biblioteca(pasta)})
+
+    arquivos = request.files.getlist("musicas")
+    if not arquivos:
+        return jsonify({"erro": "Envie pelo menos 1 música"}), 400
+
+    existentes = list(pasta.glob("*"))
+    if len(existentes) + len(arquivos) > MAX_MUSICAS_BIBLIOTECA:
+        return jsonify({"erro": f"Limite de {MAX_MUSICAS_BIBLIOTECA} músicas na biblioteca"}), 400
+
+    for f in arquivos:
+        nome_seguro = secure_filename(f.filename or "musica.mp3")
+        destino = pasta / f"{uuid.uuid4().hex[:10]}_{nome_seguro}"
+        f.save(str(destino))
+
+    return jsonify({"itens": _listar_biblioteca(pasta)})
+
+
+@app.route("/api/biblioteca/<conta_id>/musicas/<item_id>", methods=["DELETE"])
+def biblioteca_musicas_apagar(conta_id, item_id):
+    if not re.fullmatch(r"[a-zA-Z0-9_.\-]+", item_id):
+        return jsonify({"erro": "id inválido"}), 400
+    pasta = _pasta_conta(conta_id, "musicas")
+    for f in pasta.glob(f"{item_id}*"):
+        f.unlink()
+    return jsonify({"itens": _listar_biblioteca(pasta)})
+
+
+@app.route("/api/compilado/iniciar", methods=["POST"])
+def compilado_iniciar():
+    data = request.get_json(force=True)
+    conta_id = data.get("conta_id", "").strip()
+    audio_id = data.get("audio_id", "").strip()
+    api_key = data.get("api_key", "").strip()
+    usar_legenda = bool(data.get("usar_legenda", False))
+    usar_musica = bool(data.get("usar_musica", False))
+    legenda_modelo = data.get("legenda_modelo", "classico").strip()
+    cor_fundo_citacao = data.get("cor_fundo_citacao", "branco").strip()
+
+    if not conta_id:
+        return jsonify({"erro": "Escolhe uma conta primeiro"}), 400
+    if not audio_id:
+        return jsonify({"erro": "Escolhe um áudio da biblioteca"}), 400
+    if not re.fullmatch(r"[a-zA-Z0-9_.\-]+", audio_id):
+        return jsonify({"erro": "id inválido"}), 400
+
+    pasta_audios = _pasta_conta(conta_id, "audios")
+    encontrados = list(pasta_audios.glob(f"{audio_id}*"))
+    if not encontrados:
+        return jsonify({"erro": "Áudio não encontrado na biblioteca dessa conta"}), 404
+    audio_path = str(encontrados[0])
+
+    try:
+        quantidade = int(data.get("quantidade", 1))
+    except (TypeError, ValueError):
+        quantidade = 1
+    quantidade = max(1, min(quantidade, 20))
+
+    modelos_validos = set(MODELOS_LEGENDA.keys()) | {"citacao"}
+    if legenda_modelo not in modelos_validos:
+        legenda_modelo = "classico"
+    if cor_fundo_citacao not in CORES_FAIXA_CITACAO:
+        cor_fundo_citacao = "branco"
+
+    job_id = uuid.uuid4().hex[:12]
+    COMPILADO_JOBS[job_id] = {
+        "status": "na_fila",
+        "concluidos": 0,
+        "total": quantidade,
+        "criado_em": time.time(),
+    }
+
+    t = threading.Thread(
+        target=compilado_job_worker,
+        args=(job_id, conta_id, audio_path, quantidade, usar_legenda, legenda_modelo,
+              cor_fundo_citacao, api_key, usar_musica),
+        daemon=True,
+    )
+    t.start()
+
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/compilado/status/<job_id>")
+def compilado_status(job_id):
+    job = COMPILADO_JOBS.get(job_id)
+    if not job:
+        return jsonify({"erro": "job não encontrado"}), 404
+    resposta = {
+        "status": job["status"],
+        "concluidos": job.get("concluidos", 0),
+        "total": job.get("total", 0),
+    }
+    if job["status"] == "erro":
+        resposta["erro"] = job.get("erro")
+    return jsonify(resposta)
+
+
+@app.route("/api/compilado/baixar/<job_id>")
+def compilado_baixar(job_id):
+    if not re.fullmatch(r"[a-f0-9]{8,32}", job_id):
+        return jsonify({"erro": "id inválido"}), 400
+
+    job = COMPILADO_JOBS.get(job_id)
+    if job and job["status"] == "concluido":
+        return send_file(job["zip_path"], as_attachment=True, download_name=f"compilados_{job_id}.zip")
+
+    zip_path = COMPILADO_BASE_TMP / f"{job_id}.zip"
+    if zip_path.exists():
+        return send_file(str(zip_path), as_attachment=True, download_name=f"compilados_{job_id}.zip")
+
+    return jsonify({"erro": "arquivo ainda não está pronto ou não encontrado"}), 400
+
+
+@app.route("/api/compilado/recentes")
+def compilado_recentes():
+    agora = time.time()
+    recentes = {}
+    for jid, job in COMPILADO_JOBS.items():
+        idade = agora - job.get("criado_em", agora)
+        if idade > 3600:
+            continue
+        recentes[jid] = {
+            "job_id": jid, "status": job["status"],
+            "concluidos": job.get("concluidos", 0), "total": job.get("total", 0),
+            "minutos_atras": round(idade / 60, 1),
+        }
+    for zip_path in COMPILADO_BASE_TMP.glob("*.zip"):
+        jid = zip_path.stem
+        if jid in recentes:
+            continue
+        idade = agora - zip_path.stat().st_mtime
+        if idade > 3600:
+            continue
+        recentes[jid] = {
+            "job_id": jid, "status": "concluido", "concluidos": None, "total": None,
+            "minutos_atras": round(idade / 60, 1), "recuperado_do_disco": True,
+        }
     lista = sorted(recentes.values(), key=lambda x: x["minutos_atras"])
     return jsonify({"jobs": lista})
 
@@ -2584,6 +4055,9 @@ def iniciar():
 
 @app.route("/api/contar-videos", methods=["POST"])
 def contar_videos_rota():
+    """Conta o total de vídeos de uma conta — usado pra numerar do vídeo
+    mais antigo pro mais novo, e pra sugerir o próximo intervalo com base
+    no histórico salvo no navegador."""
     data = request.get_json(force=True)
     conta = data.get("conta", "").strip()
     if not conta:
@@ -2637,6 +4111,7 @@ def baixar(job_id):
 
 @app.route("/api/recentes")
 def baixador_recentes():
+    """Lista processamentos das últimas horas, combinando memória + disco."""
     agora = time.time()
     recentes = {}
 
@@ -2670,6 +4145,7 @@ def baixador_recentes():
     return jsonify({"jobs": lista})
 
 
+# Limpeza básica de jobs antigos (roda a cada request, suficiente pra uso pessoal)
 @app.before_request
 def limpar_jobs_antigos():
     agora = time.time()
@@ -2705,3 +4181,4 @@ def limpar_jobs_antigos():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
