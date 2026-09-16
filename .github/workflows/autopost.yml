@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Instalar o baixador
-        run: pip install --disable-pip-version-check requests yt-dlp
+        run: pip install --disable-pip-version-check requests "yt-dlp[default,curl-cffi]"
       - name: Repor a fila do Auto Post
         env:
           AUTOPOST_URL: https://moon-social-scheduler.izadoraavila.chatgpt.site
