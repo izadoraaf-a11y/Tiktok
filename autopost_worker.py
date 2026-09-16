@@ -13,7 +13,13 @@ HEADERS = {"Authorization": f"Bearer {AUTOPOST_SECRET}"}
 
 
 def ytdlp_json(*args):
-    result = subprocess.run(["yt-dlp", *args], check=True, capture_output=True, text=True)
+    result = subprocess.run(
+        ["yt-dlp", "--impersonate", "chrome", *args],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "O TikTok recusou a consulta do perfil")
     return json.loads(result.stdout)
 
 
@@ -25,7 +31,8 @@ def profile_entries(profile_url):
 def download_video(url, directory, video_id):
     output = str(Path(directory) / f"{video_id}.%(ext)s")
     subprocess.run([
-        "yt-dlp", "--no-playlist", "--retries", "5", "--fragment-retries", "5",
+        "yt-dlp", "--impersonate", "chrome", "--no-playlist",
+        "--retries", "5", "--fragment-retries", "5",
         "-f", "best[ext=mp4]/best", "-o", output, url,
     ], check=True)
     files = list(Path(directory).glob(f"{video_id}.*"))
