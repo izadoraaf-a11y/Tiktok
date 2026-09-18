@@ -17,4 +17,5 @@ jobs:
       - name: Processar vídeos vencidos e atualizar a fila
         env:
           AUTOPOST_SECRET: ${{ secrets.AUTOPOST_SECRET }}
-        run: curl --fail-with-body --retry 2 --max-time 300 -X POST -H "Authorization: Bearer $AUTOPOST_SECRET" -H "Content-Type: application/json" -d "{}" https://moon-social-scheduler.izadoraavila.chatgpt.site/api/publish/run
+        run: >-
+          curl --fail-with-body --retry 2 --max-time 300 -X POST -H "Authorization: Bearer $AUTOPOST_SECRET" -H "Content-Type: application/json" -d "{}" https://moon-social-scheduler.izadoraavila.chatgpt.site/api/publish/run
