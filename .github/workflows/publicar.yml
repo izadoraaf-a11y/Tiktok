@@ -2,6 +2,12 @@ name: Publicar fila do Auto Post
 
 on:
   workflow_dispatch:
+    inputs:
+      immediate:
+        description: "Agendar o próximo vídeo para daqui a 1 minuto"
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "*/5 * * * *"
 
@@ -17,5 +23,9 @@ jobs:
       - name: Processar vídeos vencidos e atualizar a fila
         env:
           AUTOPOST_SECRET: ${{ secrets.AUTOPOST_SECRET }}
-        run: >-
-          curl --fail-with-body --retry 2 --max-time 300 -X POST -H "Authorization: Bearer $AUTOPOST_SECRET" -H "Content-Type: application/json" -d "{}" https://moon-social-scheduler.izadoraavila.chatgpt.site/api/publish/run
+        run: |
+          BODY='{}'
+          if [ "${{ github.event.inputs.immediate }}" = "true" ]; then
+            BODY='{"scheduleNextMinute":true}'
+          fi
+          curl --fail-with-body --retry 2 --max-time 300 -X POST -H "Authorization: Bearer $AUTOPOST_SECRET" -H "Content-Type: application/json" -d "$BODY" https://moon-social-scheduler.izadoraavila.chatgpt.site/api/publish/run
