@@ -8,6 +8,11 @@ on:
         required: false
         type: boolean
         default: false
+      transfer_lunara:
+        description: "Transferir pendentes da Lunara para Divine Signs"
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "*/5 * * * *"
 
@@ -25,7 +30,9 @@ jobs:
           AUTOPOST_SECRET: ${{ secrets.AUTOPOST_SECRET }}
         run: |
           BODY='{}'
-          if [ "${{ github.event.inputs.immediate }}" = "true" ]; then
+          if [ "${{ github.event.inputs.transfer_lunara }}" = "true" ]; then
+            BODY='{"transferLunaraToDivine":true}'
+          elif [ "${{ github.event.inputs.immediate }}" = "true" ]; then
             BODY='{"scheduleNextMinute":true}'
           fi
           curl --fail-with-body --retry 2 --max-time 300 -X POST -H "Authorization: Bearer $AUTOPOST_SECRET" -H "Content-Type: application/json" -d "$BODY" https://moon-social-scheduler.izadoraavila.chatgpt.site/api/publish/run
