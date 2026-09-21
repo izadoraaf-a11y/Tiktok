@@ -8,6 +8,11 @@ on:
         required: false
         type: boolean
         default: false
+      mystc_now:
+        description: "Publicar um vídeo da Mystc Tarot agora"
+        required: false
+        type: boolean
+        default: false
       transfer_lunara:
         description: "Transferir pendentes da Lunara para Divine Signs"
         required: false
@@ -28,11 +33,14 @@ jobs:
       - name: Processar vídeos vencidos e atualizar a fila
         env:
           AUTOPOST_SECRET: ${{ secrets.AUTOPOST_SECRET }}
+          SITES_BYPASS_TOKEN: ${{ secrets.SITES_BYPASS_TOKEN }}
         run: |
           BODY='{}'
           if [ "${{ github.event.inputs.transfer_lunara }}" = "true" ]; then
             BODY='{"transferLunaraToDivine":true}'
+          elif [ "${{ github.event.inputs.mystc_now }}" = "true" ]; then
+            BODY='{"scheduleNextMinute":true,"pageId":"991787510687250"}'
           elif [ "${{ github.event.inputs.immediate }}" = "true" ]; then
             BODY='{"scheduleNextMinute":true}'
           fi
-          curl --fail-with-body --retry 2 --max-time 300 -X POST -H "Authorization: Bearer $AUTOPOST_SECRET" -H "Content-Type: application/json" -d "$BODY" https://moon-social-scheduler.izadoraavila.chatgpt.site/api/publish/run
+          curl --fail-with-body --retry 2 --max-time 300 -X POST -H "OAI-Sites-Authorization: Bearer $SITES_BYPASS_TOKEN" -H "Authorization: Bearer $AUTOPOST_SECRET" -H "Content-Type: application/json" -d "$BODY" https://moon-social-scheduler.izadoraavila.chatgpt.site/api/publish/run
