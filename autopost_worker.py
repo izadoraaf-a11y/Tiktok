@@ -9,7 +9,10 @@ import requests
 
 AUTOPOST_URL = os.environ.get("AUTOPOST_URL", "").rstrip("/")
 AUTOPOST_SECRET = os.environ.get("AUTOPOST_SECRET", "")
+SITES_BYPASS_TOKEN = os.environ.get("SITES_BYPASS_TOKEN", "")
 HEADERS = {"Authorization": f"Bearer {AUTOPOST_SECRET}"}
+if SITES_BYPASS_TOKEN:
+    HEADERS["OAI-Sites-Authorization"] = f"Bearer {SITES_BYPASS_TOKEN}"
 
 
 def ytdlp_json(*args):
