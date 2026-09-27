@@ -24,4 +24,5 @@ jobs:
         env:
           AUTOPOST_URL: https://moon-social-scheduler.izadoraavila.chatgpt.site
           AUTOPOST_SECRET: ${{ secrets.AUTOPOST_SECRET }}
+          SITES_BYPASS_TOKEN: ${{ secrets.SITES_BYPASS_TOKEN }}
         run: python autopost_worker.py
